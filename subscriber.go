@@ -219,6 +219,7 @@ func main() {
 		res := testResult{
 			StartTime:             start_time.Unix(),
 			Duration:              duration.Seconds(),
+			Mode:                  *mode,
 			MessageRate:           messageRate,
 			TotalMessages:         totalMessages,
 			TotalSubscriptions:    total_subscriptions,
