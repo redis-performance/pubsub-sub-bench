@@ -52,12 +52,6 @@ cd $GOPATH/src/github.com/redis-performance/pubsub-sub-bench
 make
 ```
 
-#### Limitations 
-
-There are know limitations on old go version due to the radix/v3 dependency, given that on old versions, 
-the go command in GOPATH mode does not distinguish between major versions, meaning that it will look for the package `package github.com/mediocregopher/radix/v3` instead of v3 of `package github.com/mediocregopher/radix`.
-Therefore you should only use this tool on go >= 1.11. 
-
 ## Usage of pubsub-sub-bench
 
 ```
