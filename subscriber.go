@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	radix "github.com/mediocregopher/radix/v4"
+	"github.com/redis/go-redis/v9"
 	"io/ioutil"
 	"log"
 	"os"
@@ -23,6 +24,7 @@ var totalMessages uint64
 type testResult struct {
 	StartTime             int64     `json:"StartTime"`
 	Duration              float64   `json:"Duration"`
+	Mode                  string    `json:"Mode"`
 	MessageRate           float64   `json:"MessageRate"`
 	TotalMessages         uint64    `json:"TotalMessages"`
 	TotalSubscriptions    int       `json:"TotalSubscriptions"`
@@ -35,25 +37,50 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, ctx context.Context, wg *sync.WaitGroup, opts radix.Dialer) {
+func subscriberRoutine(addr string, mode, subscriberName string, channel string, printMessages bool, ctx context.Context, wg *sync.WaitGroup, opts radix.Dialer, protocolVersion int) {
 	// tell the caller we've stopped
 	defer wg.Done()
-
-	_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
-	defer ps.Close()
-
-	for {
-		msg, err := ps.Next(ctx)
-		if errors.Is(err, context.Canceled) {
-			break
-		} else if err != nil {
-			panic(err)
+	switch mode {
+	case "ssubscribe":
+		client := redis.NewClient(&redis.Options{
+			Addr:            addr,
+			Password:        opts.AuthPass,
+			ClientName:      subscriberName,
+			ProtocolVersion: protocolVersion,
+		})
+		spubsub := client.SSubscribe(ctx, channel)
+		defer spubsub.Close()
+		for {
+			msg, err := spubsub.ReceiveMessage(ctx)
+			if err != nil {
+				panic(err)
+			}
+			if printMessages {
+				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
+			}
+			atomic.AddUint64(&totalMessages, 1)
 		}
-		if printMessages {
-			fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Message))
+		break
+	case "subscribe":
+		fallthrough
+	default:
+		_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
+		defer ps.Close()
+		for {
+			msg, err := ps.Next(ctx)
+			if errors.Is(err, context.Canceled) {
+				break
+			} else if err != nil {
+				panic(err)
+			}
+			if printMessages {
+				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Message))
+			}
+			atomic.AddUint64(&totalMessages, 1)
 		}
-		atomic.AddUint64(&totalMessages, 1)
+
 	}
+
 }
 
 func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, *time.Ticker) {
@@ -85,6 +112,7 @@ func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
 	port := flag.String("port", "6379", "redis port.")
 	password := flag.String("a", "", "Password for Redis Auth.")
+	mode := flag.String("mode", "subscribe", "Subscribe mode. Either 'subscribe' or 'ssubscribe'.")
 	username := flag.String("user", "", "Used to send ACL style 'AUTH username pass'. Needs -a.")
 	subscribers_placement := flag.String("subscribers-placement-per-channel", "dense", "(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner.")
 	channel_minimum := flag.Int("channel-minimum", 1, "channel ID minimum value ( each channel has a dedicated thread ).")
@@ -100,9 +128,8 @@ func main() {
 	printMessages := flag.Bool("print-messages", false, "print messages.")
 	//TODO FIX ME
 	//dialTimeout := flag.Duration("redis-timeout", time.Second*300, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
-	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
+	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
-
 	totalMessages = 0
 	var nodes []radix.ClusterNode
 	var nodesAddresses []string
@@ -114,11 +141,12 @@ func main() {
 			opts.AuthUser = *username
 		}
 	}
-	if *resp == "2" {
+	if *resp == 2 {
 		opts.Protocol = "2"
-	} else if *resp == "3" {
+	} else if *resp == 3 {
 		opts.Protocol = "3"
 	}
+
 	if *test_time != 0 && *messages_per_channel_subscriber != 0 {
 		log.Fatal(fmt.Errorf("--messages and --test-time are mutially exclusive ( please specify one or the other )"))
 	}
@@ -168,7 +196,7 @@ func main() {
 				channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
 				subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
 				wg.Add(1)
-				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, ctx, &wg, opts)
+				go subscriberRoutine(addr.Addr, *mode, subscriberName, channel, *printMessages, ctx, &wg, opts, *resp)
 			}
 		}
 	}
@@ -191,6 +219,7 @@ func main() {
 		res := testResult{
 			StartTime:             start_time.Unix(),
 			Duration:              duration.Seconds(),
+			Mode:                  *mode,
 			MessageRate:           messageRate,
 			TotalMessages:         totalMessages,
 			TotalSubscriptions:    total_subscriptions,
