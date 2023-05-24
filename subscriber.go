@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +68,7 @@ func subscriberRoutine(addr string, mode, subscriberName string, channel string,
 		_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
 		defer ps.Close()
 		for {
+			ps.
 			msg, err := ps.Next(ctx)
 			if errors.Is(err, context.Canceled) {
 				break
@@ -111,6 +113,7 @@ func bootstrapPubSub(addr string, subscriberName string, channel string, opts ra
 func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
 	port := flag.String("port", "6379", "redis port.")
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	mode := flag.String("mode", "subscribe", "Subscribe mode. Either 'subscribe' or 'ssubscribe'.")
 	username := flag.String("user", "", "Used to send ACL style 'AUTH username pass'. Needs -a.")
@@ -186,6 +189,13 @@ func main() {
 	total_subscriptions := total_channels * *subscribers_per_channel
 	total_messages := int64(total_subscriptions) * *messages_per_channel_subscriber
 	fmt.Println(fmt.Sprintf("Total subcriptions: %d. Subscriptions per node %d. Total messages: %d", total_subscriptions, subscriptions_per_node, total_messages))
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+	}
 
 	if strings.Compare(*subscribers_placement, "dense") == 0 {
 		for channel_id := *channel_minimum; channel_id <= *channel_maximum; channel_id++ {
@@ -209,6 +219,10 @@ func main() {
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
 	closed, start_time, duration, totalMessages, messageRateTs := updateCLI(tick, c, total_messages, w, *test_time)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
+
+	if *cpuprofile != "" {
+		pprof.StopCPUProfile()
+	}
 
 	fmt.Fprint(w, fmt.Sprintf("#################################################\nTotal Duration %f Seconds\nMessage Rate %f\n#################################################\n", duration.Seconds(), messageRate))
 	fmt.Fprint(w, "\r\n")

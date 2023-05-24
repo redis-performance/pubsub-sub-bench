@@ -91,3 +91,7 @@ Thumbs.db
 # Coverage Results #
 ####################
 coverage.txt
+
+# Profiler Results #
+####################
+*.pprof
