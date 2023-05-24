@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	radix "github.com/mediocregopher/radix/v4"
@@ -41,14 +40,14 @@ type testResult struct {
 func subscriberRoutine(addr string, mode, subscriberName string, channel string, printMessages bool, ctx context.Context, wg *sync.WaitGroup, opts radix.Dialer, protocolVersion int) {
 	// tell the caller we've stopped
 	defer wg.Done()
+	client := redis.NewClient(&redis.Options{
+		Addr:            addr,
+		Password:        opts.AuthPass,
+		ClientName:      subscriberName,
+		ProtocolVersion: protocolVersion,
+	})
 	switch mode {
 	case "ssubscribe":
-		client := redis.NewClient(&redis.Options{
-			Addr:            addr,
-			Password:        opts.AuthPass,
-			ClientName:      subscriberName,
-			ProtocolVersion: protocolVersion,
-		})
 		spubsub := client.SSubscribe(ctx, channel)
 		defer spubsub.Close()
 		for {
@@ -65,48 +64,20 @@ func subscriberRoutine(addr string, mode, subscriberName string, channel string,
 	case "subscribe":
 		fallthrough
 	default:
-		_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
-		defer ps.Close()
+		pubsub := client.Subscribe(ctx, channel)
+		defer pubsub.Close()
 		for {
-			msg, err := ps.Next(ctx)
-			if errors.Is(err, context.Canceled) {
-				break
-			} else if err != nil {
+			msg, err := pubsub.ReceiveMessage(ctx)
+			if err != nil {
 				panic(err)
 			}
 			if printMessages {
-				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Message))
+				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
 			}
 			atomic.AddUint64(&totalMessages, 1)
 		}
-
 	}
 
-}
-
-func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, *time.Ticker) {
-	// Create a normal redis connection
-	ctx := context.Background()
-	conn, err := opts.Dial(ctx, "tcp", addr)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = conn.Do(ctx, radix.FlatCmd(nil, "CLIENT", "SETNAME", subscriberName))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Pass that connection into PubSub, conn should never get used after this
-	ps := radix.PubSubConfig{PingInterval: -1}.New(conn)
-
-	err = ps.Subscribe(ctx, channel)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	return conn, err, ps, nil
 }
 
 func main() {
