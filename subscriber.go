@@ -68,7 +68,6 @@ func subscriberRoutine(addr string, mode, subscriberName string, channel string,
 		_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
 		defer ps.Close()
 		for {
-			ps.
 			msg, err := ps.Next(ctx)
 			if errors.Is(err, context.Canceled) {
 				break
@@ -100,7 +99,7 @@ func bootstrapPubSub(addr string, subscriberName string, channel string, opts ra
 	}
 
 	// Pass that connection into PubSub, conn should never get used after this
-	ps := radix.PubSubConfig{}.New(conn)
+	ps := radix.PubSubConfig{PingInterval: -1}.New(conn)
 
 	err = ps.Subscribe(ctx, channel)
 	if err != nil {
