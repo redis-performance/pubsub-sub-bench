@@ -202,6 +202,13 @@ func main() {
 		}
 		nodeCount, nodeClients, nodesAddresses = updateSecondarySlicesCluster(clusterClient, ctx)
 	}
+
+	log.Println(fmt.Sprintf("Detailing final setup used for benchmark."))
+	log.Println(fmt.Sprintf("\tTotal nodes: %d", nodeCount))
+	for i, nodeAddress := range nodesAddresses {
+		log.Println(fmt.Sprintf("\tnode #%d: Address: %s", i, nodeAddress))
+		log.Println(fmt.Sprintf("\t\tClient struct: %v", nodeClients[i]))
+	}
 	// trap Ctrl+C and call cancel on the context
 	// We Use this instead of the previous stopChannel + chan radix.PubSubMessage
 	ctx, cancel := context.WithCancel(ctx)
@@ -348,7 +355,7 @@ func updateSecondarySlicesCluster(clusterClient *redis.ClusterClient, ctx contex
 		return
 	}
 	clusterClient.ForEachMaster(ctx, fn)
-	nodeCount = len(slots)
+	nodeCount = len(nodesAddresses)
 	return nodeCount, nodeClients, nodesAddresses
 }
 
