@@ -341,8 +341,8 @@ func updateSecondarySlicesCluster(clusterClient *redis.ClusterClient, ctx contex
 		nodeClients = append(nodeClients, client)
 		addr := client.Conn().String()
 		addrS := strings.Split(addr, ":")
-		finalAddr := fmt.Sprintf("%s:%s", addrS[0], addrS[1])
-		log.Println(fmt.Sprintf("Cluster node pos #%d. Address: %s", len(nodeClients), finalAddr))
+		finalAddr := fmt.Sprintf("%s:%s", addrS[0][len(" Redis<")-1:], addrS[1][:len(addrS[1])-3])
+		log.Println(fmt.Sprintf("Cluster node pos #%d. Address: %s.", len(nodeClients), finalAddr))
 		nodesAddresses = append(nodesAddresses, finalAddr)
 		clusterSlicesMu.Unlock()
 		return
