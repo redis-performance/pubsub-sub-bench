@@ -105,7 +105,7 @@ func main() {
 	verbose := flag.Bool("verbose", false, "verbose print.")
 	version := flag.Bool("version", false, "print version and exit.")
 	timeout := flag.Duration("redis-timeout", time.Second*30, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
-	poolSizePtr := flag.Int(redisPoolSize, redisPoolSizeDefault, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
+	poolSizePtr := flag.Int(redisPoolSize, redisPoolSizeDefault, "Maximum number of socket connections per node.")
 	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
 
