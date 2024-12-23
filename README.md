@@ -66,18 +66,40 @@ Usage of ./pubsub-sub-bench:
     	Specify client output buffer limits for clients subscribed to at least one pubsub channel or pattern. If the value specified is different that the one present on the DB, this setting will apply.
   -client-update-tick int
     	client update tick. (default 1)
+  -clients int
+    	Number of parallel connections. (default 50)
+  -cpuprofile string
+    	write cpu profile to file
   -host string
     	redis host. (default "127.0.0.1")
   -json-out-file string
     	Name of json output file, if not set, will not print to json.
+  -max-number-channels-per-subscriber int
+    	max number of channels to subscribe to, per connection. (default 1)
+  -max-reconnect-interval int
+    	max reconnect interval. if 0 disable (s)unsubscribe/(s)ubscribe.
   -messages int
     	Number of total messages per subscriber per channel.
+  -min-number-channels-per-subscriber int
+    	min number of channels to subscribe to, per connection. (default 1)
+  -min-reconnect-interval int
+    	min reconnect interval. if 0 disable (s)unsubscribe/(s)ubscribe.
+  -mode string
+    	Subscribe mode. Either 'subscribe' or 'ssubscribe'. (default "subscribe")
   -oss-cluster-api-distribute-subscribers
     	read cluster slots and distribute subscribers among them.
+  -pool_size int
+    	Maximum number of socket connections per node.
   -port string
     	redis port. (default "6379")
   -print-messages
     	print messages.
+  -rand-seed int
+    	Random deterministic seed. (default 12345)
+  -redis-timeout duration
+    	determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts. (default 30s)
+  -resp int
+    	redis command response protocol (2 - RESP 2, 3 - RESP 3) (default 2)
   -subscriber-prefix string
     	prefix for subscribing to channel, used in conjunction with key-minimum and key-maximum. (default "channel-")
   -subscribers-per-channel int
@@ -88,5 +110,23 @@ Usage of ./pubsub-sub-bench:
     	Number of seconds to run the test, after receiving the first message.
   -user string
     	Used to send ACL style 'AUTH username pass'. Needs -a.
+  -verbose
+    	verbose print.
+  -version
+    	print version and exit.
+```
+
+### Example usage: create 10 subscribers that will subscribe to 2000 channels
+
+Subscriber
 
 ```
+./pubsub-sub-bench --clients 10  --channel-maximum 2000 --channel-minimum 1 -min-number-channels-per-subscriber 2000 -max-number-channels-per-subscriber 2000
+```
+
+Publisher
+
+```
+memtier_benchmark --key-prefix "channel-" --key-maximum 2000 --key-minimum 1 --command "PUBLISH __key__ __data__" --test-time 60 --pipeline 10
+```
+
