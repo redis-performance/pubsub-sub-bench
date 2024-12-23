@@ -153,6 +153,7 @@ func main() {
 	channel_minimum := flag.Int("channel-minimum", 1, "channel ID minimum value ( each channel has a dedicated thread ).")
 	channel_maximum := flag.Int("channel-maximum", 100, "channel ID maximum value ( each channel has a dedicated thread ).")
 	subscribers_per_channel := flag.Int("subscribers-per-channel", 1, "number of subscribers per channel.")
+	clients := flag.Int("clients", 50, "Number of parallel connections.")
 	min_channels_per_subscriber := flag.Int("min-number-channels-per-subscriber", 1, "min number of channels to subscribe to, per connection.")
 	max_channels_per_subscriber := flag.Int("max-number-channels-per-subscriber", 1, "max number of channels to subscribe to, per connection.")
 	min_reconnect_interval := flag.Int("min-reconnect-interval", 0, "min reconnect interval. if 0 disable (s)unsubscribe/(s)ubscribe.")
@@ -249,7 +250,6 @@ func main() {
 	total_messages := int64(total_subscriptions) * *messages_per_channel_subscriber
 	subscriptions_per_node := total_subscriptions / nodeCount
 
-	log.Println(fmt.Sprintf("Total subcriptions: %d. Subscriptions per node %d. Total messages: %d", total_subscriptions, subscriptions_per_node, total_messages))
 	log.Println(fmt.Sprintf("Will use a subscriber prefix of: %s<channel id>", *subscribe_prefix))
 
 	if *poolSizePtr == 0 {
@@ -306,60 +306,59 @@ func main() {
 	}
 	totalCreatedClients := 0
 	if strings.Compare(*subscribers_placement, "dense") == 0 {
-		for channel_id := *channel_minimum; channel_id <= *channel_maximum; channel_id++ {
-			channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
-			for channel_subscriber_number := 1; channel_subscriber_number <= *subscribers_per_channel; channel_subscriber_number++ {
-				channels := []string{channel}
-				n_channels_this_conn := 1
-				if *max_channels_per_subscriber == *min_channels_per_subscriber {
-					n_channels_this_conn = *max_channels_per_subscriber
-				} else {
-					n_channels_this_conn = rand.Intn(*max_channels_per_subscriber-*min_channels_per_subscriber) + *min_channels_per_subscriber
-				}
-				for channel_this_conn := 1; channel_this_conn < n_channels_this_conn; channel_this_conn++ {
-					new_channel_id := rand.Intn(*channel_maximum) + *channel_minimum
-					new_channel := fmt.Sprintf("%s%d", *subscribe_prefix, new_channel_id)
-					channels = append(channels, new_channel)
-				}
-				totalCreatedClients++
-				subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
-				var client *redis.Client
-				var err error = nil
-				ctx = context.Background()
-				// In case of SSUBSCRIBE the node is associated the to the channel name
-				if strings.Compare(*mode, "ssubscribe") == 0 && *distributeSubscribers == true {
-					client, err = clusterClient.MasterForKey(ctx, channel)
-					if err != nil {
-						log.Fatal(err)
-					}
-					if *verbose {
-						log.Println(fmt.Sprintf("client %d is a CLUSTER client connected to %v. Subscriber name %s", totalCreatedClients, client.String(), subscriberName))
-					}
-				} else {
-					nodes_pos := channel_id % nodeCount
-					addr := nodesAddresses[nodes_pos]
-					client = nodeClients[nodes_pos]
-					if *verbose {
-						log.Println(fmt.Sprintf("client %d is a STANDALONE client connected to node %d (address %s). Subscriber name %s", totalCreatedClients, nodes_pos, addr, subscriberName))
-					}
-					err = client.Ping(ctx).Err()
-					if err != nil {
-						log.Fatal(err)
-					}
-				}
-				wg.Add(1)
-				connectionReconnectInterval := 0
-				if *max_reconnect_interval == *min_reconnect_interval {
-					connectionReconnectInterval = *max_reconnect_interval
-				} else {
-					connectionReconnectInterval = rand.Intn(*max_reconnect_interval-*min_reconnect_interval) + *min_reconnect_interval
-				}
-				if connectionReconnectInterval > 0 {
-					log.Println(fmt.Sprintf("Using reconnection interval of %d milliseconds for subscriber: %s", connectionReconnectInterval, subscriberName))
-				}
-				log.Println(fmt.Sprintf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels))
-				go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, ctx, &wg, client)
+		for client_id := 1; client_id <= *clients; client_id++ {
+			channels := []string{}
+			n_channels_this_conn := 0
+			if *max_channels_per_subscriber == *min_channels_per_subscriber {
+				n_channels_this_conn = *max_channels_per_subscriber
+			} else {
+				n_channels_this_conn = rand.Intn(*max_channels_per_subscriber-*min_channels_per_subscriber) + *min_channels_per_subscriber
 			}
+			for channel_this_conn := 1; channel_this_conn <= n_channels_this_conn; channel_this_conn++ {
+				new_channel_id := rand.Intn(*channel_maximum) + *channel_minimum
+				new_channel := fmt.Sprintf("%s%d", *subscribe_prefix, new_channel_id)
+				channels = append(channels, new_channel)
+			}
+			totalCreatedClients++
+			subscriberName := fmt.Sprintf("subscriber#%d", client_id)
+			var client *redis.Client
+			var err error = nil
+			ctx = context.Background()
+			// In case of SSUBSCRIBE the node is associated the to the channel name
+			if strings.Compare(*mode, "ssubscribe") == 0 && *distributeSubscribers == true {
+				firstChannel := channels[0]
+				client, err = clusterClient.MasterForKey(ctx, firstChannel)
+				if err != nil {
+					log.Fatal(err)
+				}
+				if *verbose {
+					log.Println(fmt.Sprintf("client %d is a CLUSTER client connected to %v. Subscriber name %s", totalCreatedClients, client.String(), subscriberName))
+				}
+			} else {
+				nodes_pos := client_id % nodeCount
+				addr := nodesAddresses[nodes_pos]
+				client = nodeClients[nodes_pos]
+				if *verbose {
+					log.Println(fmt.Sprintf("client %d is a STANDALONE client connected to node %d (address %s). Subscriber name %s", totalCreatedClients, nodes_pos, addr, subscriberName))
+				}
+				err = client.Ping(ctx).Err()
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+			wg.Add(1)
+			connectionReconnectInterval := 0
+			if *max_reconnect_interval == *min_reconnect_interval {
+				connectionReconnectInterval = *max_reconnect_interval
+			} else {
+				connectionReconnectInterval = rand.Intn(*max_reconnect_interval-*min_reconnect_interval) + *min_reconnect_interval
+			}
+			if connectionReconnectInterval > 0 {
+				log.Println(fmt.Sprintf("Using reconnection interval of %d milliseconds for subscriber: %s", connectionReconnectInterval, subscriberName))
+			}
+			log.Println(fmt.Sprintf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels))
+			go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, ctx, &wg, client)
+			// }
 		}
 	}
 
