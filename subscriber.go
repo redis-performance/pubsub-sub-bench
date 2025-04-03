@@ -11,12 +11,14 @@ import (
 	"os"
 	"os/signal"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
 
+	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
 	redis "github.com/redis/go-redis/v9"
 )
 
@@ -31,6 +33,7 @@ const (
 
 var totalMessages uint64
 var totalSubscribedChannels int64
+var totalPublishers int64
 var totalConnects uint64
 var clusterSlicesMu sync.Mutex
 
@@ -50,8 +53,57 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(clientName, mode string, channels []string, printMessages bool, connectionReconnectInterval int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client) {
-	// Tell the caller we've stopped
+func publisherRoutine(clientName string, channels []string, mode string, measureRTT bool, verbose bool, dataSize int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client) {
+	defer wg.Done()
+
+	if verbose {
+		log.Printf("Publisher %s started. Mode: %s | Channels: %d | Payload: %s",
+			clientName, mode, len(channels),
+			func() string {
+				if measureRTT {
+					return "RTT timestamp"
+				}
+				return fmt.Sprintf("fixed size %d bytes", dataSize)
+			}(),
+		)
+	}
+
+	var payload string
+	if !measureRTT {
+		payload = strings.Repeat("A", dataSize)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Publisher %s exiting due to context cancellation.", clientName)
+			return
+
+		default:
+			msg := payload
+			if measureRTT {
+				now := time.Now().UnixMicro()
+				msg = strconv.FormatInt(now, 10)
+			}
+
+			for _, ch := range channels {
+				var err error
+				switch mode {
+				case "spublish":
+					err = client.SPublish(ctx, ch, msg).Err()
+				default:
+					err = client.Publish(ctx, ch, msg).Err()
+				}
+				if err != nil {
+					log.Printf("Error publishing to channel %s: %v", ch, err)
+				}
+				atomic.AddUint64(&totalMessages, 1)
+			}
+		}
+	}
+}
+
+func subscriberRoutine(clientName, mode string, channels []string, verbose bool, connectionReconnectInterval int, measureRTT bool, rttLatencyChannel chan int64, ctx context.Context, wg *sync.WaitGroup, client *redis.Client) { // Tell the caller we've stopped
 	defer wg.Done()
 	var reconnectTicker *time.Ticker
 	if connectionReconnectInterval > 0 {
@@ -134,8 +186,20 @@ func subscriberRoutine(clientName, mode string, channels []string, printMessages
 				}
 				panic(err)
 			}
-			if printMessages {
-				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
+			if verbose {
+				log.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
+			}
+			if measureRTT {
+				if ts, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
+					now := time.Now().UnixMicro()
+					rtt := now - ts
+					rttLatencyChannel <- rtt
+					if verbose {
+						log.Printf("RTT measured: %d ms\n", rtt/1000)
+					}
+				} else {
+					log.Printf("Invalid timestamp in message: %s, err: %v\n", msg.Payload, err)
+				}
 			}
 			atomic.AddUint64(&totalMessages, 1)
 		}
@@ -147,6 +211,7 @@ func main() {
 	port := flag.String("port", "6379", "redis port.")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	password := flag.String("a", "", "Password for Redis Auth.")
+	dataSize := flag.Int("data-size", 128, "Payload size in bytes for publisher messages when RTT mode is disabled")
 	mode := flag.String("mode", "subscribe", "Subscribe mode. Either 'subscribe' or 'ssubscribe'.")
 	username := flag.String("user", "", "Used to send ACL style 'AUTH username pass'. Needs -a.")
 	subscribers_placement := flag.String("subscribers-placement-per-channel", "dense", "(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner.")
@@ -168,6 +233,7 @@ func main() {
 	distributeSubscribers := flag.Bool("oss-cluster-api-distribute-subscribers", false, "read cluster slots and distribute subscribers among them.")
 	printMessages := flag.Bool("print-messages", false, "print messages.")
 	verbose := flag.Bool("verbose", false, "verbose print.")
+	measureRTT := flag.Bool("measure-rtt-latency", false, "Enable RTT latency measurement mode")
 	version := flag.Bool("version", false, "print version and exit.")
 	timeout := flag.Duration("redis-timeout", time.Second*30, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
 	poolSizePtr := flag.Int(redisPoolSize, redisPoolSizeDefault, "Maximum number of socket connections per node.")
@@ -190,7 +256,14 @@ func main() {
 	log.Println(fmt.Sprintf("pubsub-sub-bench (git_sha1:%s%s)", git_sha, git_dirty_str))
 	log.Println(fmt.Sprintf("using random seed:%d", *randSeed))
 	rand.Seed(*randSeed)
-
+	if *measureRTT {
+		log.Println("RTT measurement enabled.")
+	} else {
+		log.Println("RTT measurement disabled.")
+	}
+	if *verbose {
+		log.Println("verbose mode enabled.")
+	}
 	ctx := context.Background()
 	nodeCount := 0
 	var nodesAddresses []string
@@ -251,6 +324,7 @@ func main() {
 	subscriptions_per_node := total_subscriptions / nodeCount
 
 	log.Println(fmt.Sprintf("Will use a subscriber prefix of: %s<channel id>", *subscribe_prefix))
+	log.Println(fmt.Sprintf("total_channels: %d", total_channels))
 
 	if *poolSizePtr == 0 {
 		poolSize = subscriptions_per_node
@@ -304,62 +378,114 @@ func main() {
 		}
 		pprof.StartCPUProfile(f)
 	}
+	rttLatencyChannel := make(chan int64, 100000) // Channel for RTT measurements. buffer of 100K messages to process
 	totalCreatedClients := 0
-	if strings.Compare(*subscribers_placement, "dense") == 0 {
+	if strings.Contains(*mode, "publish") {
+		// Only run publishers
 		for client_id := 1; client_id <= *clients; client_id++ {
 			channels := []string{}
-			n_channels_this_conn := 0
+			n_channels_this_pub := 0
 			if *max_channels_per_subscriber == *min_channels_per_subscriber {
-				n_channels_this_conn = *max_channels_per_subscriber
+				n_channels_this_pub = *max_channels_per_subscriber
 			} else {
-				n_channels_this_conn = rand.Intn(*max_channels_per_subscriber-*min_channels_per_subscriber) + *min_channels_per_subscriber
+				n_channels_this_pub = rand.Intn(*max_channels_per_subscriber-*min_channels_per_subscriber) + *min_channels_per_subscriber
 			}
-			for channel_this_conn := 1; channel_this_conn <= n_channels_this_conn; channel_this_conn++ {
-				new_channel_id := rand.Intn(*channel_maximum) + *channel_minimum
+			for i := 0; i < n_channels_this_pub; i++ {
+				new_channel_id := rand.Intn(*channel_maximum-*channel_minimum+1) + *channel_minimum
 				new_channel := fmt.Sprintf("%s%d", *subscribe_prefix, new_channel_id)
 				channels = append(channels, new_channel)
 			}
-			totalCreatedClients++
-			subscriberName := fmt.Sprintf("subscriber#%d", client_id)
+
+			publisherName := fmt.Sprintf("publisher#%d", client_id)
 			var client *redis.Client
-			var err error = nil
+			var err error
+
 			ctx = context.Background()
-			// In case of SSUBSCRIBE the node is associated the to the channel name
-			if strings.Compare(*mode, "ssubscribe") == 0 && *distributeSubscribers == true {
+			if strings.Compare(*mode, "spublish") == 0 && *distributeSubscribers {
 				firstChannel := channels[0]
 				client, err = clusterClient.MasterForKey(ctx, firstChannel)
 				if err != nil {
 					log.Fatal(err)
 				}
-				if *verbose {
-					log.Println(fmt.Sprintf("client %d is a CLUSTER client connected to %v. Subscriber name %s", totalCreatedClients, client.String(), subscriberName))
-				}
 			} else {
-				nodes_pos := client_id % nodeCount
-				addr := nodesAddresses[nodes_pos]
-				client = nodeClients[nodes_pos]
-				if *verbose {
-					log.Println(fmt.Sprintf("client %d is a STANDALONE client connected to node %d (address %s). Subscriber name %s", totalCreatedClients, nodes_pos, addr, subscriberName))
-				}
+				nodePos := client_id % nodeCount
+				client = nodeClients[nodePos]
 				err = client.Ping(ctx).Err()
 				if err != nil {
 					log.Fatal(err)
 				}
 			}
+
+			if *verbose {
+				log.Printf("publisher %d targeting channels %v", client_id, channels)
+			}
+
 			wg.Add(1)
-			connectionReconnectInterval := 0
-			if *max_reconnect_interval == *min_reconnect_interval {
-				connectionReconnectInterval = *max_reconnect_interval
-			} else {
-				connectionReconnectInterval = rand.Intn(*max_reconnect_interval-*min_reconnect_interval) + *min_reconnect_interval
-			}
-			if connectionReconnectInterval > 0 {
-				log.Println(fmt.Sprintf("Using reconnection interval of %d milliseconds for subscriber: %s", connectionReconnectInterval, subscriberName))
-			}
-			log.Println(fmt.Sprintf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels))
-			go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, ctx, &wg, client)
-			// }
+			go publisherRoutine(publisherName, channels, *mode, *measureRTT, *verbose, *dataSize, ctx, &wg, client)
+			atomic.AddInt64(&totalPublishers, 1)
+			atomic.AddUint64(&totalConnects, 1)
 		}
+
+	} else if strings.Contains(*mode, "subscribe") {
+		// Only run subscribers
+		if strings.Compare(*subscribers_placement, "dense") == 0 {
+			for client_id := 1; client_id <= *clients; client_id++ {
+				channels := []string{}
+				n_channels_this_conn := 0
+				if *max_channels_per_subscriber == *min_channels_per_subscriber {
+					n_channels_this_conn = *max_channels_per_subscriber
+				} else {
+					n_channels_this_conn = rand.Intn(*max_channels_per_subscriber-*min_channels_per_subscriber) + *min_channels_per_subscriber
+				}
+				for channel_this_conn := 1; channel_this_conn <= n_channels_this_conn; channel_this_conn++ {
+					new_channel_id := rand.Intn(*channel_maximum-*channel_minimum+1) + *channel_minimum
+					new_channel := fmt.Sprintf("%s%d", *subscribe_prefix, new_channel_id)
+					channels = append(channels, new_channel)
+				}
+				totalCreatedClients++
+				subscriberName := fmt.Sprintf("subscriber#%d", client_id)
+				var client *redis.Client
+				var err error = nil
+				ctx = context.Background()
+
+				if strings.Compare(*mode, "ssubscribe") == 0 && *distributeSubscribers == true {
+					firstChannel := channels[0]
+					client, err = clusterClient.MasterForKey(ctx, firstChannel)
+					if err != nil {
+						log.Fatal(err)
+					}
+				} else {
+					nodes_pos := client_id % nodeCount
+					addr := nodesAddresses[nodes_pos]
+					client = nodeClients[nodes_pos]
+					if *verbose {
+						log.Printf("client %d is a STANDALONE client connected to node %d (address %s). Subscriber name %s", totalCreatedClients, nodes_pos, addr, subscriberName)
+					}
+					err = client.Ping(ctx).Err()
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
+
+				connectionReconnectInterval := 0
+				if *max_reconnect_interval == *min_reconnect_interval {
+					connectionReconnectInterval = *max_reconnect_interval
+				} else {
+					connectionReconnectInterval = rand.Intn(*max_reconnect_interval-*min_reconnect_interval) + *min_reconnect_interval
+				}
+
+				if connectionReconnectInterval > 0 {
+					log.Printf("Using reconnection interval of %d milliseconds for subscriber: %s", connectionReconnectInterval, subscriberName)
+				}
+
+				log.Printf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels)
+
+				wg.Add(1)
+				go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, *measureRTT, rttLatencyChannel, ctx, &wg, client)
+			}
+		}
+	} else {
+		log.Fatalf("Invalid mode '%s'. Must be one of: subscribe, ssubscribe, publish, spublish", *mode)
 	}
 
 	// listen for C-c
@@ -368,14 +494,32 @@ func main() {
 	w := new(tabwriter.Writer)
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
-	closed, start_time, duration, totalMessages, messageRateTs := updateCLI(tick, c, total_messages, w, *test_time)
+	closed, start_time, duration, totalMessages, messageRateTs, rttValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 
 	if *cpuprofile != "" {
 		pprof.StopCPUProfile()
 	}
-
-	fmt.Fprint(w, fmt.Sprintf("#################################################\nTotal Duration %f Seconds\nMessage Rate %f\n#################################################\n", duration.Seconds(), messageRate))
+	fmt.Fprintf(w, "#################################################\n")
+	fmt.Fprintf(w, "Mode: %s\n", *mode)
+	fmt.Fprintf(w, "Total Duration: %f Seconds\n", duration.Seconds())
+	fmt.Fprintf(w, "Message Rate: %f msg/sec\n", messageRate)
+	if *measureRTT && (*mode != "publish" && *mode != "spublish") {
+		hist := hdrhistogram.New(1, 10_000_000, 3) // 1us to 10s, 3 sig digits
+		for _, rtt := range rttValues {
+			_ = hist.RecordValue(rtt)
+		}
+		avg := hist.Mean()
+		p50 := hist.ValueAtQuantile(50.0)
+		p99 := hist.ValueAtQuantile(99.0)
+		p999 := hist.ValueAtQuantile(99.9)
+		fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000.0)
+		fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000.0)
+		fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000.0)
+		fmt.Fprintf(w, "P999 RTT       %.3f ms\n", float64(p999)/1000.0)
+	} else {
+	}
+	fmt.Fprintf(w, "#################################################\n")
 	fmt.Fprint(w, "\r\n")
 	w.Flush()
 
@@ -447,55 +591,106 @@ func updateSecondarySlicesCluster(clusterClient *redis.ClusterClient, ctx contex
 	nodeCount = len(nodesAddresses)
 	return nodeCount, nodeClients, nodesAddresses
 }
-
-func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit int64, w *tabwriter.Writer, test_time int) (bool, time.Time, time.Duration, uint64, []float64) {
+func updateCLI(
+	tick *time.Ticker,
+	c chan os.Signal,
+	message_limit int64,
+	w *tabwriter.Writer,
+	test_time int,
+	measureRTT bool,
+	mode string,
+	rttLatencyChannel chan int64,
+) (bool, time.Time, time.Duration, uint64, []float64, []int64) {
 
 	start := time.Now()
 	prevTime := time.Now()
 	prevMessageCount := uint64(0)
 	prevConnectCount := uint64(0)
 	messageRateTs := []float64{}
+	tickRttValues := []int64{}
+	rttValues := []int64{}
 
 	w.Init(os.Stdout, 25, 0, 1, ' ', tabwriter.AlignRight)
-	fmt.Fprint(w, fmt.Sprintf("Test Time\tTotal Messages\t Message Rate \tConnect Rate \tActive subscriptions\t"))
-	fmt.Fprint(w, "\n")
+
+	// Header
+	if measureRTT {
+		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
+		if strings.HasPrefix(mode, "subscribe") {
+			fmt.Fprint(w, "Active subscriptions\t")
+		} else {
+			fmt.Fprint(w, "Active publishers\t")
+		}
+		fmt.Fprint(w, "Avg RTT (ms)\t\n")
+	} else {
+		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
+		if strings.HasPrefix(mode, "subscribe") {
+			fmt.Fprint(w, "Active subscriptions\t\n")
+		} else {
+			fmt.Fprint(w, "Active publishers\t\n")
+		}
+	}
 	w.Flush()
+
+	// Main loop
 	for {
 		select {
+		case rtt := <-rttLatencyChannel:
+			rttValues = append(rttValues, rtt)
+			tickRttValues = append(tickRttValues, rtt)
+
 		case <-tick.C:
-			{
-				now := time.Now()
-				took := now.Sub(prevTime)
-				messageRate := float64(totalMessages-prevMessageCount) / float64(took.Seconds())
-				connectRate := float64(totalConnects-prevConnectCount) / float64(took.Seconds())
+			now := time.Now()
+			took := now.Sub(prevTime)
+			messageRate := float64(totalMessages-prevMessageCount) / float64(took.Seconds())
+			connectRate := float64(totalConnects-prevConnectCount) / float64(took.Seconds())
 
-				if prevMessageCount == 0 && totalMessages != 0 {
-					start = time.Now()
-				}
-				if totalMessages != 0 {
-					messageRateTs = append(messageRateTs, messageRate)
-				}
-				prevMessageCount = totalMessages
-				prevConnectCount = totalConnects
-				prevTime = now
+			if prevMessageCount == 0 && totalMessages != 0 {
+				start = time.Now()
+			}
+			if totalMessages != 0 {
+				messageRateTs = append(messageRateTs, messageRate)
+			}
+			prevMessageCount = totalMessages
+			prevConnectCount = totalConnects
+			prevTime = now
 
-				fmt.Fprint(w, fmt.Sprintf("%.0f\t%d\t%.2f\t%.2f\t%d\t", time.Since(start).Seconds(), totalMessages, messageRate, connectRate, totalSubscribedChannels))
-				fmt.Fprint(w, "\r\n")
-				w.Flush()
-				if message_limit > 0 && totalMessages >= uint64(message_limit) {
-					return true, start, time.Since(start), totalMessages, messageRateTs
-				}
-				if test_time > 0 && time.Since(start) >= time.Duration(test_time*1000*1000*1000) && totalMessages != 0 {
-					return true, start, time.Since(start), totalMessages, messageRateTs
-				}
+			// Metrics line
+			fmt.Fprintf(w, "%.0f\t%d\t%.2f\t%.2f\t", time.Since(start).Seconds(), totalMessages, messageRate, connectRate)
 
-				break
+			if strings.HasPrefix(mode, "subscribe") {
+				fmt.Fprintf(w, "%d\t", totalSubscribedChannels)
+			} else {
+				fmt.Fprintf(w, "%d\t", atomic.LoadInt64(&totalPublishers))
+			}
+
+			if measureRTT {
+				var avgRTTms float64
+				if len(tickRttValues) > 0 {
+					var total int64
+					for _, v := range tickRttValues {
+						total += v
+					}
+					avgRTTms = float64(total) / float64(len(tickRttValues)) / 1000.0
+					tickRttValues = tickRttValues[:0]
+					fmt.Fprintf(w, "%.3f\t", avgRTTms)
+				} else {
+					fmt.Fprintf(w, "--\t")
+				}
+			}
+
+			fmt.Fprint(w, "\r\n")
+			w.Flush()
+
+			if message_limit > 0 && totalMessages >= uint64(message_limit) {
+				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
+			}
+			if test_time > 0 && time.Since(start) >= time.Duration(test_time*int(time.Second)) && totalMessages != 0 {
+				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
 			}
 
 		case <-c:
 			fmt.Println("received Ctrl-c - shutting down")
-			return true, start, time.Since(start), totalMessages, messageRateTs
+			return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
 		}
 	}
-	return false, start, time.Since(start), totalMessages, messageRateTs
 }
