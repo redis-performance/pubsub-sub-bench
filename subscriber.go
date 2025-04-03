@@ -615,7 +615,8 @@ func updateCLI(
 	// Header
 	if measureRTT {
 		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
-		if strings.HasPrefix(mode, "subscribe") {
+
+		if strings.Contains(mode, "subscribe") {
 			fmt.Fprint(w, "Active subscriptions\t")
 		} else {
 			fmt.Fprint(w, "Active publishers\t")
@@ -623,7 +624,7 @@ func updateCLI(
 		fmt.Fprint(w, "Avg RTT (ms)\t\n")
 	} else {
 		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
-		if strings.HasPrefix(mode, "subscribe") {
+		if strings.Contains(mode, "subscribe") {
 			fmt.Fprint(w, "Active subscriptions\t\n")
 		} else {
 			fmt.Fprint(w, "Active publishers\t\n")
@@ -657,7 +658,7 @@ func updateCLI(
 			// Metrics line
 			fmt.Fprintf(w, "%.0f\t%d\t%.2f\t%.2f\t", time.Since(start).Seconds(), totalMessages, messageRate, connectRate)
 
-			if strings.HasPrefix(mode, "subscribe") {
+			if strings.Contains(mode, "subscribe") {
 				fmt.Fprintf(w, "%d\t", totalSubscribedChannels)
 			} else {
 				fmt.Fprintf(w, "%d\t", atomic.LoadInt64(&totalPublishers))
