@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 
 	hdrhistogram "github.com/HdrHistogram/hdrhistogram-go"
 	redis "github.com/redis/go-redis/v9"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -30,6 +32,8 @@ const (
 	redisTLSKey                = "tls_key"
 	redisTLSInsecureSkipVerify = "tls_insecure_skip_verify"
 )
+
+const Inf = rate.Limit(math.MaxFloat64)
 
 var totalMessages uint64
 var totalSubscribedChannels int64
@@ -53,7 +57,7 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func publisherRoutine(clientName string, channels []string, mode string, measureRTT bool, verbose bool, dataSize int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client) {
+func publisherRoutine(clientName string, channels []string, mode string, measureRTT bool, verbose bool, dataSize int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client, useLimiter bool, rateLimiter *rate.Limiter) {
 	defer wg.Done()
 
 	if verbose {
@@ -81,12 +85,16 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 
 		default:
 			msg := payload
-			if measureRTT {
-				now := time.Now().UnixMicro()
-				msg = strconv.FormatInt(now, 10)
-			}
 
 			for _, ch := range channels {
+				if useLimiter {
+					r := rateLimiter.ReserveN(time.Now(), int(1))
+					time.Sleep(r.Delay())
+				}
+				if measureRTT {
+					now := time.Now().UnixMicro()
+					msg = strconv.FormatInt(now, 10)
+				}
 				var err error
 				switch mode {
 				case "spublish":
@@ -210,6 +218,8 @@ func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
 	port := flag.String("port", "6379", "redis port.")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
+	rps := flag.Int64("rps", 0, "Max rps. If 0 no limit is applied and the DB is stressed up to maximum.")
+	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst. If 0 the allowed burst will be the ammount of clients.")
 	password := flag.String("a", "", "Password for Redis Auth.")
 	dataSize := flag.Int("data-size", 128, "Payload size in bytes for publisher messages when RTT mode is disabled")
 	mode := flag.String("mode", "subscribe", "Subscribe mode. Either 'subscribe' or 'ssubscribe'.")
@@ -381,6 +391,21 @@ func main() {
 	rttLatencyChannel := make(chan int64, 100000) // Channel for RTT measurements. buffer of 100K messages to process
 	totalCreatedClients := 0
 	if strings.Contains(*mode, "publish") {
+		var requestRate = Inf
+		var requestBurst = int(*rps)
+		useRateLimiter := false
+		if *rps != 0 {
+			requestRate = rate.Limit(*rps)
+			log.Println(fmt.Sprintf("running publisher mode with rate-limit enabled. Max published %d messages/sec.\n", *rps))
+			useRateLimiter = true
+			if *rpsburst != 0 {
+				requestBurst = int(*rpsburst)
+			}
+		} else {
+			log.Println(fmt.Sprintf("running publisher mode with maximum rate enabled."))
+		}
+
+		var rateLimiter = rate.NewLimiter(requestRate, requestBurst)
 		// Only run publishers
 		for client_id := 1; client_id <= *clients; client_id++ {
 			channels := []string{}
@@ -421,7 +446,7 @@ func main() {
 			}
 
 			wg.Add(1)
-			go publisherRoutine(publisherName, channels, *mode, *measureRTT, *verbose, *dataSize, ctx, &wg, client)
+			go publisherRoutine(publisherName, channels, *mode, *measureRTT, *verbose, *dataSize, ctx, &wg, client, useRateLimiter, rateLimiter)
 			atomic.AddInt64(&totalPublishers, 1)
 			atomic.AddUint64(&totalConnects, 1)
 		}
