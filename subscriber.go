@@ -539,10 +539,12 @@ func main() {
 		}
 		avg := hist.Mean()
 		p50 := hist.ValueAtQuantile(50.0)
+		p95 := hist.ValueAtQuantile(95.0)
 		p99 := hist.ValueAtQuantile(99.0)
 		p999 := hist.ValueAtQuantile(99.9)
 		fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000.0)
 		fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000.0)
+		fmt.Fprintf(w, "P95 RTT       %.3f ms\n", float64(p95)/1000.0)
 		fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000.0)
 		fmt.Fprintf(w, "P999 RTT       %.3f ms\n", float64(p999)/1000.0)
 	} else {
