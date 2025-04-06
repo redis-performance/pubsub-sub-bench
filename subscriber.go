@@ -502,9 +502,12 @@ func main() {
 				if connectionReconnectInterval > 0 {
 					log.Printf("Using reconnection interval of %d milliseconds for subscriber: %s", connectionReconnectInterval, subscriberName)
 				}
-
-				log.Printf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels)
-
+				if *verbose {
+					log.Printf("subscriber: %s. Total channels %d: %v", subscriberName, len(channels), channels)
+				}
+				if totalCreatedClients%100 == 0 {
+					log.Printf("Created %d clients so far.", totalCreatedClients)
+				}
 				wg.Add(1)
 				go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, *measureRTT, rttLatencyChannel, ctx, &wg, client)
 			}
