@@ -1,0 +1,170 @@
+const fs = require('fs');
+const hdr = require('hdr-histogram-js');
+
+function formatRow(row) {
+  return row
+    .map((val, i) => {
+      const width = [6, 15, 14, 14, 22, 14][i] || 10; // width per column
+      return String(val).padEnd(width);
+    })
+    .join('');
+}
+
+function updateCLI(
+  updateInterval,
+  messageLimit,
+  testTime,
+  measureRTT,
+  mode,
+  isRunningRef,
+  totalMessagesRef,
+  totalConnectsRef,
+  totalSubscribedRef,
+  totalPublishersRef,
+  messageRateTs,
+  rttValues,
+  outputResults
+) {
+  let prevTime = Date.now();
+  let prevMessageCount = 0;
+  let prevConnectCount = 0;
+  let startTime = Date.now();
+
+  console.log('Starting benchmark...');
+
+  const formatRow = (row) => {
+    const widths = [6, 15, 14, 14, 22, 14];
+    return row.map((val, i) => String(val).padEnd(widths[i] || 10)).join('');
+  };
+
+  const header = ['Time', 'Total Messages', 'Message Rate', 'Connect Rate'];
+  header.push(mode.includes('subscribe') ? 'Active Subscriptions' : 'Active Publishers');
+  if (measureRTT) header.push('Avg RTT (ms)');
+  console.log(formatRow(header));
+
+  const interval = setInterval(() => {
+    const now = Date.now();
+    const elapsed = (now - prevTime) / 1000;
+
+    const messageRate = (totalMessagesRef.value - prevMessageCount) / elapsed;
+    const connectRate = (totalConnectsRef.value - prevConnectCount) / elapsed;
+
+    if (prevMessageCount === 0 && totalMessagesRef.value !== 0) {
+      startTime = Date.now();
+    }
+
+    if (totalMessagesRef.value !== 0) {
+      messageRateTs.push(messageRate);
+    }
+
+    prevMessageCount = totalMessagesRef.value;
+    prevConnectCount = totalConnectsRef.value;
+    prevTime = now;
+
+    const metrics = [
+      Math.floor((now - startTime) / 1000),
+      totalMessagesRef.value,
+      messageRate.toFixed(2),
+      connectRate.toFixed(2),
+      mode.includes('subscribe') ? totalSubscribedRef.value : totalPublishersRef.value
+    ];
+
+    if (measureRTT) {
+      const tickRttValues = rttValues.splice(0);
+      if (tickRttValues.length > 0) {
+        const sum = tickRttValues.reduce((a, b) => a + b, 0n);
+        const avgRtt = Number(sum) / tickRttValues.length;
+        metrics.push((avgRtt / 1000).toFixed(3)); // µs to ms
+      } else {
+        metrics.push('--');
+      }
+    }
+
+    console.log(formatRow(metrics));
+
+    if (messageLimit > 0 && totalMessagesRef.value >= messageLimit) {
+      clearInterval(interval);
+      isRunningRef.value = false;
+      outputResults(startTime, now);
+    }
+
+    if (testTime > 0 && now - startTime >= testTime * 1000 && totalMessagesRef.value !== 0) {
+      clearInterval(interval);
+      isRunningRef.value = false;
+      outputResults(startTime, now);
+    }
+  }, updateInterval * 1000);
+
+  process.on('SIGINT', () => {
+    console.log('\nReceived Ctrl-C - shutting down');
+    clearInterval(interval);
+    isRunningRef.value = false;
+    outputResults(startTime, Date.now());
+    process.exit(0);
+  });
+}
+
+function writeFinalResults(
+  start,
+  end,
+  argv,
+  mode,
+  totalMessages,
+  totalSubscribed,
+  messageRateTs,
+  rttValues
+) {
+  const duration = (end - start) / 1000;
+  const messageRate = totalMessages / duration;
+
+  console.log('#################################################');
+  console.log(`Mode: ${mode}`);
+  console.log(`Total Duration: ${duration.toFixed(6)} Seconds`);
+  console.log(`Message Rate: ${messageRate.toFixed(6)} msg/sec`);
+
+  if (argv['measure-rtt-latency'] && !mode.includes('publish')) {
+    const histogram = hdr.build({
+      lowestDiscernibleValue: 1,
+      highestTrackableValue: 10_000_000,
+      numberOfSignificantValueDigits: 3
+    });
+    rttValues.forEach((rtt) => {
+      const val = Number(rtt);
+      if (val >= 0) {
+        histogram.recordValue(val);
+      }
+    });
+    console.log(`Avg RTT       ${(histogram.mean / 1000).toFixed(3)} ms`);
+    console.log(`P50 RTT       ${(histogram.getValueAtPercentile(50) / 1000).toFixed(3)} ms`);
+    console.log(`P95 RTT       ${(histogram.getValueAtPercentile(95) / 1000).toFixed(3)} ms`);
+    console.log(`P99 RTT       ${(histogram.getValueAtPercentile(99) / 1000).toFixed(3)} ms`);
+    console.log(`P999 RTT      ${(histogram.getValueAtPercentile(99.9) / 1000).toFixed(3)} ms`);
+  }
+
+  console.log('#################################################');
+
+  if (argv['json-out-file']) {
+    const result = {
+      StartTime: Math.floor(start / 1000),
+      Duration: duration,
+      Mode: mode,
+      MessageRate: messageRate,
+      TotalMessages: totalMessages,
+      TotalSubscriptions: totalSubscribed,
+      ChannelMin: argv['channel-minimum'],
+      ChannelMax: argv['channel-maximum'],
+      SubscribersPerChannel: argv['subscribers-per-channel'],
+      MessagesPerChannel: argv['messages'],
+      MessageRateTs: messageRateTs,
+      OSSDistributedSlots: argv['oss-cluster-api-distribute-subscribers'],
+      Addresses: [`${argv.host}:${argv.port}`]
+    };
+    fs.writeFileSync(argv['json-out-file'], JSON.stringify(result, null, 2));
+    console.log(`Results written to ${argv['json-out-file']}`);
+  }
+}
+
+module.exports = {
+  updateCLI,
+  writeFinalResults
+};
