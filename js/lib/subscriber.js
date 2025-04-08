@@ -15,7 +15,8 @@ async function subscriberRoutine(
   totalMessagesRef,
   totalSubscribedRef,
   totalConnectsRef,
-  verbose
+  verbose,
+  totalClients
 ) {
   let pubsub = null;
   let reconnectTimer = null;
@@ -143,9 +144,13 @@ async function subscriberRoutine(
     const check = setInterval(async () => {
       if (!isRunningRef.value) {
         clearInterval(check);
-        console.log(`[${clientName}] Triggering shutdown...`);
+        const clientId = parseInt(clientName.split('#')[1], 10);
+        const shouldLog = clientId % 100 === 0 || clientId === totalClients;
+
+        if (shouldLog) console.log(`[${clientName}] Triggering shutdown...`);
+
         await shutdown();
-        console.log(`[${clientName}] Shutdown complete.`);
+        if (shouldLog) console.log(`[${clientName}] Shutdown complete.`);
         resolve();
       }
     }, 500);

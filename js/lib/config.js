@@ -30,6 +30,7 @@ function parseArgs() {
     .option('rand-seed', { default: 12345 })
     .option('subscriber-prefix', { default: 'channel-' })
     .option('oss-cluster-api-distribute-subscribers', { default: false })
+    .option('slot-refresh-interval', { default: -1 })
     .option('print-messages', { default: false })
     .option('verbose', { default: false })
     .option('measure-rtt-latency', { default: false })

@@ -47,6 +47,8 @@ async function runBenchmark(argv) {
   let clients = [];
   let nodeAddresses = [];
   let slotClientMap = new Map();
+  console.log(`Using ${argv['slot-refresh-interval']} slot-refresh-interval`);
+  console.log(`Using ${argv['redis-timeout']} redis-timeout`);
 
   if (argv['oss-cluster-api-distribute-subscribers']) {
     const cluster = new Redis.Cluster(
@@ -60,7 +62,9 @@ async function runBenchmark(argv) {
         redisOptions,
         scaleReads: 'master',
         enableReadyCheck: true,
-        lazyConnect: false
+        lazyConnect: false,
+        connectTimeout: argv['redis-timeout'],
+        slotsRefreshInterval: argv['slot-refresh-interval']
       }
     );
 
@@ -77,11 +81,11 @@ async function runBenchmark(argv) {
         port,
         username: argv.user || undefined,
         password: argv.a || undefined,
-        connectTimeout: argv['redis-timeout'],
-        commandTimeout: argv['redis-timeout'],
         maxRetriesPerRequest: 1,
         enableReadyCheck: true,
-        lazyConnect: false
+        lazyConnect: false,
+        connectTimeout: argv['redis-timeout'],
+        slotsRefreshInterval: argv['slot-refresh-interval']
       });
 
       // Save one entry per slot
@@ -147,7 +151,9 @@ async function runBenchmark(argv) {
           console.log(`Reconnect interval for ${subscriberName}: ${reconnectInterval}ms`);
         }
 
-        console.log(`${subscriberName} subscribing to ${channels.length} channels.`);
+        if (clientId % 100 === 0 || clientId === argv.clients) {
+          console.log(`${subscriberName} subscribing to ${channels.length} channels.`);
+        }
 
         promises.push(
           subscriberRoutine(
@@ -163,7 +169,8 @@ async function runBenchmark(argv) {
             totalMessagesRef,
             totalSubscribedRef,
             totalConnectsRef,
-            argv.verbose
+            argv.verbose,
+            argv.cliens
           )
         );
       }
