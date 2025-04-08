@@ -26,6 +26,7 @@ async function runBenchmark(argv) {
   const isRunningRef = { value: true };
   const messageRateTs = [];
   const rttValues = [];
+  const rttArchive = [];
 
   const redisOptions = {
     host: argv.host,
@@ -166,6 +167,7 @@ async function runBenchmark(argv) {
             client,
             isRunningRef,
             rttValues,
+            rttArchive,
             totalMessagesRef,
             totalSubscribedRef,
             totalConnectsRef,
@@ -193,6 +195,7 @@ async function runBenchmark(argv) {
     totalPublishersRef,
     messageRateTs,
     rttValues,
+    rttArchive,
     () => {} // no-op, outputResults is handled after await
   );
 
@@ -209,6 +212,7 @@ async function runBenchmark(argv) {
     totalSubscribedRef.value,
     messageRateTs,
     rttValues,
+    rttArchive,
     perSecondStats
   );
 

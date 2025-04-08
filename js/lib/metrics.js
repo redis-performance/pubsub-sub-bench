@@ -18,7 +18,8 @@ function updateCLI(
   totalSubscribedRef,
   totalPublishersRef,
   messageRateTs,
-  rttValues
+  rttValues,
+  rttArchive
 ) {
   return new Promise((resolve) => {
     let prevTime = Date.now();
@@ -118,6 +119,7 @@ function writeFinalResults(
   totalSubscribed,
   messageRateTs,
   rttValues,
+  rttArchive,
   perSecondStats
 ) {
   const duration = (end - start) / 1000;
@@ -128,6 +130,23 @@ function writeFinalResults(
   console.log(`Total Duration: ${duration.toFixed(6)} Seconds`);
   console.log(`Message Rate: ${messageRate.toFixed(6)} msg/sec`);
 
+  const result = {
+    StartTime: Math.floor(start / 1000),
+    Duration: duration,
+    Mode: mode,
+    MessageRate: messageRate,
+    TotalMessages: totalMessages,
+    TotalSubscriptions: totalSubscribed,
+    ChannelMin: argv['channel-minimum'],
+    ChannelMax: argv['channel-maximum'],
+    SubscribersPerChannel: argv['subscribers-per-channel'],
+    MessagesPerChannel: argv['messages'],
+    MessageRateTs: messageRateTs,
+    OSSDistributedSlots: argv['oss-cluster-api-distribute-subscribers'],
+    Addresses: [`${argv.host}:${argv.port}`],
+    PerSecondStats: perSecondStats
+  };
+
   if (argv['measure-rtt-latency'] && !mode.includes('publish')) {
     const histogram = hdr.build({
       lowestDiscernibleValue: 1,
@@ -135,37 +154,37 @@ function writeFinalResults(
       numberOfSignificantValueDigits: 3
     });
 
-    rttValues.forEach((rtt) => {
+    rttArchive.forEach((rtt) => {
       const val = Number(rtt);
       if (val >= 0) histogram.recordValue(val);
     });
 
-    console.log(`Avg RTT       ${(histogram.mean / 1000).toFixed(3)} ms`);
-    console.log(`P50 RTT       ${(histogram.getValueAtPercentile(50) / 1000).toFixed(3)} ms`);
-    console.log(`P95 RTT       ${(histogram.getValueAtPercentile(95) / 1000).toFixed(3)} ms`);
-    console.log(`P99 RTT       ${(histogram.getValueAtPercentile(99) / 1000).toFixed(3)} ms`);
-    console.log(`P999 RTT      ${(histogram.getValueAtPercentile(99.9) / 1000).toFixed(3)} ms`);
+    const avgRtt = histogram.mean / 1000;
+    const p50 = histogram.getValueAtPercentile(50) / 1000;
+    const p95 = histogram.getValueAtPercentile(95) / 1000;
+    const p99 = histogram.getValueAtPercentile(99) / 1000;
+    const p999 = histogram.getValueAtPercentile(99.9) / 1000;
+
+    result.RTTSummary = {
+      AvgMs: Number(avgRtt.toFixed(3)),
+      P50Ms: Number(p50.toFixed(3)),
+      P95Ms: Number(p95.toFixed(3)),
+      P99Ms: Number(p99.toFixed(3)),
+      P999Ms: Number(p999.toFixed(3)),
+      totalCount: histogram.totalCount
+    };
+
+    console.log(`Avg RTT       ${avgRtt.toFixed(3)} ms`);
+    console.log(`P50 RTT       ${p50.toFixed(3)} ms`);
+    console.log(`P95 RTT       ${p95.toFixed(3)} ms`);
+    console.log(`P99 RTT       ${p99.toFixed(3)} ms`);
+    console.log(`P999 RTT      ${p999.toFixed(3)} ms`);
+    console.log(`Total Messages tracked latency      ${histogram.totalCount} messages`);
   }
 
   console.log('#################################################');
 
   if (argv['json-out-file']) {
-    const result = {
-      StartTime: Math.floor(start / 1000),
-      Duration: duration,
-      Mode: mode,
-      MessageRate: messageRate,
-      TotalMessages: totalMessages,
-      TotalSubscriptions: totalSubscribed,
-      ChannelMin: argv['channel-minimum'],
-      ChannelMax: argv['channel-maximum'],
-      SubscribersPerChannel: argv['subscribers-per-channel'],
-      MessagesPerChannel: argv['messages'],
-      MessageRateTs: messageRateTs,
-      OSSDistributedSlots: argv['oss-cluster-api-distribute-subscribers'],
-      Addresses: [`${argv.host}:${argv.port}`],
-      PerSecondStats: perSecondStats
-    };
     fs.writeFileSync(argv['json-out-file'], JSON.stringify(result, null, 2));
     console.log(`Results written to ${argv['json-out-file']}`);
   }

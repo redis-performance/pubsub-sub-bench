@@ -12,6 +12,7 @@ async function subscriberRoutine(
   client,
   isRunningRef,
   rttValues,
+  rttArchive,
   totalMessagesRef,
   totalSubscribedRef,
   totalConnectsRef,
@@ -75,6 +76,7 @@ async function subscriberRoutine(
 
         if (rtt >= 0n) {
           rttValues.push(rtt);
+          rttArchive.push(rtt);
           if (verbose) {
             console.log(`[${clientName}] RTT: ${rtt} µs`);
           }
