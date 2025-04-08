@@ -18,52 +18,50 @@ async function subscriberRoutine(
   verbose
 ) {
   let pubsub = null;
+  let reconnectTimer = null;
 
+  // Subscribe function which creates a new duplicated connection.
   const subscribe = async () => {
-    if (pubsub) {
-      if (channels.length > 1) {
-        try {
+    try {
+      // If already subscribed, try unsubscribing extra channels first.
+      if (pubsub) {
+        if (channels.length > 1) {
           if (mode === 'ssubscribe') {
             await pubsub.sunsubscribe(...channels.slice(1));
-            totalSubscribedRef.value -= channels.slice(1).length;
-            pubsub = client.duplicate();
-            await pubsub.ssubscribe(...channels.slice(1));
-            totalSubscribedRef.value += channels.slice(1).length;
           } else {
             await pubsub.unsubscribe(...channels.slice(1));
-            totalSubscribedRef.value -= channels.slice(1).length;
-            pubsub = client.duplicate();
-            await pubsub.subscribe(...channels.slice(1));
-            totalSubscribedRef.value += channels.slice(1).length;
           }
-          totalConnectsRef.value++;
-        } catch (err) {
-          console.error(`[${clientName}] Error during unsubscribe/subscribe:`, err);
+          totalSubscribedRef.value -= channels.slice(1).length;
         }
+        // Duplicate connection afresh.
+        pubsub = client.duplicate();
       } else {
-        console.log(`[${clientName}] Only one channel, skipping re-subscribe`);
+        pubsub = client.duplicate();
       }
-    } else {
-      pubsub = client.duplicate();
+
+      // Set up error logging.
       pubsub.on('error', (err) => {
         console.error(`[${clientName}] Redis error: ${err.message}`);
       });
 
+      // Subscribe to channels with appropriate method.
       if (mode === 'ssubscribe') {
         await pubsub.ssubscribe(...channels);
+        pubsub.on('smessage', handleMessage);
       } else {
         await pubsub.subscribe(...channels);
+        pubsub.on('message', handleMessage);
       }
+
       totalSubscribedRef.value += channels.length;
       totalConnectsRef.value++;
+    } catch (err) {
+      console.error(`[${clientName}] Subscribe error:`, err);
     }
-
-    return pubsub;
   };
 
-  pubsub = await subscribe();
-
-  const handler = (channel, message) => {
+  // Handler for incoming messages.
+  const handleMessage = (channel, message) => {
     if (printMessages) {
       console.log(`[${clientName}] ${channel}: ${message}`);
     }
@@ -71,64 +69,86 @@ async function subscriberRoutine(
     if (measureRTT) {
       try {
         const now = BigInt(Date.now()) * 1000n;
-        const timestamp = BigInt(message);
+        const timestamp = BigInt(message); // µs
         const rtt = now - timestamp;
-        rttValues.push(rtt);
-        if (verbose) {
-          console.log(`[${clientName}] RTT measured: ${rtt} µs (sent ${timestamp}, recv ${now})`);
+
+        if (rtt >= 0n) {
+          rttValues.push(rtt);
+          if (verbose) {
+            console.log(`[${clientName}] RTT: ${rtt} µs`);
+          }
+        } else {
+          console.warn(`[${clientName}] Skipping negative RTT: now=${now}, ts=${timestamp}`);
         }
       } catch (err) {
         console.error(`[${clientName}] Invalid RTT message: ${message}`, err);
       }
     }
-
     totalMessagesRef.value++;
   };
 
-  if (mode === 'ssubscribe') {
-    pubsub.on('smessage', handler);
-  } else {
-    pubsub.on('message', handler);
-  }
+  // Initial subscription.
+  await subscribe();
 
-  let interval = null;
+  // Set up automatic re-subscription if reconnectInterval is set.
   if (reconnectInterval > 0) {
-    interval = setInterval(async () => {
+    reconnectTimer = setInterval(async () => {
       if (isRunningRef.value) {
         await subscribe();
-      } else {
-        clearInterval(interval);
       }
     }, reconnectInterval);
   }
 
-  // Handle graceful shutdown
-  const shutdown = async () => {
-    try {
-      if (interval) clearInterval(interval);
+  // Shutdown function with a forced timeout safeguard.
+  const shutdown = () => {
+    return new Promise(async (resolve) => {
+      // Clear the reconnection timer if set.
+      if (reconnectTimer) clearInterval(reconnectTimer);
 
-      if (pubsub) {
-        if (mode === 'ssubscribe') {
-          await pubsub.sunsubscribe(...channels);
-        } else {
-          await pubsub.unsubscribe(...channels);
+      // Set a timeout in case shutdown hangs.
+      const forcedTimeout = setTimeout(() => {
+        console.warn(`[${clientName}] Shutdown timed out. Forcing resolve.`);
+        resolve();
+      }, 5000); // 5 seconds fallback
+
+      // Attempt to unsubscribe from channels.
+      try {
+        if (pubsub) {
+          if (mode === 'ssubscribe') {
+            await pubsub.sunsubscribe(...channels);
+          } else {
+            await pubsub.unsubscribe(...channels);
+          }
         }
-
-        await pubsub.quit(); // graceful Redis shutdown
+      } catch (err) {
+        console.warn(`[${clientName}] Unsubscribe error: ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`[${clientName}] Error during shutdown:`, err.message);
-    }
+
+      // Now disconnect immediately.
+      try {
+        if (pubsub) {
+          pubsub.disconnect();
+        }
+      } catch (err) {
+        console.warn(`[${clientName}] Disconnect error: ${err.message}`);
+      }
+
+      clearTimeout(forcedTimeout);
+      resolve();
+    });
   };
 
+  // Return a promise that waits until isRunningRef becomes false, then cleans up.
   return new Promise((resolve) => {
     const check = setInterval(async () => {
       if (!isRunningRef.value) {
         clearInterval(check);
+        console.log(`[${clientName}] Triggering shutdown...`);
         await shutdown();
+        console.log(`[${clientName}] Shutdown complete.`);
         resolve();
       }
-    }, 1000);
+    }, 500);
   });
 }
 

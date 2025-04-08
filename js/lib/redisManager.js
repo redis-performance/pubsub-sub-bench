@@ -173,7 +173,7 @@ async function runBenchmark(argv) {
     process.exit(1);
   }
 
-  updateCLI(
+  const { startTime, now, perSecondStats } = await updateCLI(
     argv['client-update-tick'],
     argv.messages > 0 ? totalExpectedMessages : 0,
     argv['test-time'],
@@ -186,20 +186,27 @@ async function runBenchmark(argv) {
     totalPublishersRef,
     messageRateTs,
     rttValues,
-    (start, end) =>
-      writeFinalResults(
-        start,
-        end,
-        argv,
-        argv.mode,
-        totalMessagesRef.value,
-        totalSubscribedRef.value,
-        messageRateTs,
-        rttValues
-      )
+    () => {} // no-op, outputResults is handled after await
   );
 
+  // Wait for all routines to finish
   await Promise.all(promises);
+
+  // THEN output final results
+  writeFinalResults(
+    startTime,
+    now,
+    argv,
+    argv.mode,
+    totalMessagesRef.value,
+    totalSubscribedRef.value,
+    messageRateTs,
+    rttValues,
+    perSecondStats
+  );
+
+  // cleanly exit the process once done
+  process.exit(0);
 }
 
 function randomInt(min, max) {
