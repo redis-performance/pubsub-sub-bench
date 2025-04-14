@@ -1,0 +1,24 @@
+{
+    "name": "pubsub-sub-bench",
+    "version": "0.1.0",
+    "main": "bin/pubsub-sub-bench.js",
+    "license": "Apache-2.0",
+    "dependencies": {
+        "cluster-key-slot": "^1.1.0",
+        "hdr-histogram-js": "^2.0.1",
+        "ioredis": "^4.29.1",
+        "seedrandom": "^3.0.5",
+        "yargs": "^17.7.2"
+    },
+    "devDependencies": {
+        "husky": "^9.1.7",
+        "lint-staged": "^15.5.0",
+        "prettier": "^3.5.3"
+    },
+    "scripts": {
+        "format": "prettier --write '**/*.js'"
+    },
+    "lint-staged": {
+        "js/**/*.js": "prettier --write"
+    }
+}   

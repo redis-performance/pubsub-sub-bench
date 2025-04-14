@@ -24,7 +24,7 @@ pubsub-sub-bench
 .idea
 .vscode
 .project
-bin/
+#bin/
 
 # Binaries for programs and plugins
 *.exe
