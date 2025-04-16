@@ -2,7 +2,7 @@ const Redis = require('ioredis');
 const clusterKeySlot = require('cluster-key-slot');
 const { publisherRoutine } = require('./publisher');
 const { subscriberRoutine } = require('./subscriber');
-const { updateCLI, writeFinalResults } = require('./metrics');
+const { updateCLI, writeFinalResults, createRttHistogram, RttAccumulator } = require('./metrics');
 const seedrandom = require('seedrandom');
 
 async function runBenchmark(argv) {
@@ -25,8 +25,11 @@ async function runBenchmark(argv) {
   const totalConnectsRef = { value: 0 };
   const isRunningRef = { value: true };
   const messageRateTs = [];
-  const rttValues = [];
-  const rttArchive = [];
+  
+  // Create efficient RTT tracking
+  const rttAccumulator = argv['measure-rtt-latency'] ? new RttAccumulator() : null;
+  // Create histogram for RTT recording
+  const rttHistogram = argv['measure-rtt-latency'] ? createRttHistogram() : null;
 
   const redisOptions = {
     host: argv.host,
@@ -166,8 +169,8 @@ async function runBenchmark(argv) {
             argv['measure-rtt-latency'],
             client,
             isRunningRef,
-            rttValues,
-            rttArchive,
+            rttAccumulator,
+            rttHistogram,
             totalMessagesRef,
             totalSubscribedRef,
             totalConnectsRef,
@@ -194,8 +197,8 @@ async function runBenchmark(argv) {
     totalSubscribedRef,
     totalPublishersRef,
     messageRateTs,
-    rttValues,
-    rttArchive,
+    rttAccumulator,
+    rttHistogram,
     () => {} // no-op, outputResults is handled after await
   );
 
@@ -211,8 +214,8 @@ async function runBenchmark(argv) {
     totalMessagesRef.value,
     totalSubscribedRef.value,
     messageRateTs,
-    rttValues,
-    rttArchive,
+    rttAccumulator,
+    rttHistogram,
     perSecondStats
   );
 

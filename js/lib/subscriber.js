@@ -11,8 +11,8 @@ async function subscriberRoutine(
   measureRTT,
   client,
   isRunningRef,
-  rttValues,
-  rttArchive,
+  rttAccumulator,
+  rttHistogram,
   totalMessagesRef,
   totalSubscribedRef,
   totalConnectsRef,
@@ -71,13 +71,19 @@ async function subscriberRoutine(
     if (measureRTT) {
       try {
         const now = Date.now();
-        const timestamp = Number(message); // µs
+        const timestamp = Number(message); // Timestamp from publisher
         const rtt = now - timestamp;
-        if (rtt >= 0n) {
-          rttValues.push(rtt);
-          rttArchive.push(rtt);
+        if (rtt >= 0) {
+          // Add to accumulator for per-tick average calculation
+          if (rttAccumulator) {
+            rttAccumulator.add(rtt);
+          }
+          // Record directly to histogram for final stats
+          if (rttHistogram) {
+            rttHistogram.recordValue(rtt);
+          }
           if (verbose) {
-            console.log(`[${clientName}] RTT: ${rtt} µs`);
+            console.log(`[${clientName}] RTT: ${rtt} ms`);
           }
         } else {
           console.warn(`[${clientName}] Skipping negative RTT: now=${now}, ts=${timestamp}`);

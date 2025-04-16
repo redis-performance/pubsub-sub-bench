@@ -1,6 +1,35 @@
 const fs = require('fs');
 const hdr = require('hdr-histogram-js');
 
+// Simple accumulator for RTT stats per tick
+class RttAccumulator {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.sum = 0;
+    this.count = 0;
+  }
+
+  add(value) {
+    this.sum += value;
+    this.count++;
+  }
+
+  getAverage() {
+    return this.count > 0 ? this.sum / this.count : null;
+  }
+}
+
+function createRttHistogram() {
+  return hdr.build({
+    lowestDiscernibleValue: 1,
+    highestTrackableValue: 10_000_000,
+    numberOfSignificantValueDigits: 3
+  });
+}
+
 function formatRow(row) {
   const widths = [6, 15, 14, 14, 22, 14];
   return row.map((val, i) => String(val).padEnd(widths[i] || 10)).join('');
@@ -18,8 +47,8 @@ function updateCLI(
   totalSubscribedRef,
   totalPublishersRef,
   messageRateTs,
-  rttValues,
-  rttArchive
+  rttAccumulator,
+  rttHistogram
 ) {
   return new Promise((resolve) => {
     let prevTime = Date.now();
@@ -66,12 +95,11 @@ function updateCLI(
       let avgRttMs = null;
 
       if (measureRTT) {
-        const tickRttValues = rttValues.splice(0);
-        if (tickRttValues.length > 0) {
-          const sum = tickRttValues.reduce((a, b) => a + b, 0);
-          const avgRtt = Number(sum) / tickRttValues.length;
-          avgRttMs = avgRtt;
+        if (rttAccumulator.count > 0) {
+          avgRttMs = rttAccumulator.getAverage();
           metrics.push(avgRttMs.toFixed(3));
+          // Reset accumulator after using the values
+          rttAccumulator.reset();
         } else {
           metrics.push('--');
         }
@@ -119,7 +147,7 @@ function writeFinalResults(
   totalSubscribed,
   messageRateTs,
   rttValues,
-  rttArchive,
+  rttHistogram,
   perSecondStats
 ) {
   const duration = (end - start);
@@ -148,22 +176,11 @@ function writeFinalResults(
   };
 
   if (argv['measure-rtt-latency'] && !mode.includes('publish')) {
-    const histogram = hdr.build({
-      lowestDiscernibleValue: 1,
-      highestTrackableValue: 10_000_000,
-      numberOfSignificantValueDigits: 3
-    });
-
-    rttArchive.forEach((rtt) => {
-      const val = Number(rtt);
-      if (val >= 0) histogram.recordValue(val);
-    });
-
-    const avgRtt = histogram.mean ;
-    const p50 = histogram.getValueAtPercentile(50);
-    const p95 = histogram.getValueAtPercentile(95);
-    const p99 = histogram.getValueAtPercentile(99);
-    const p999 = histogram.getValueAtPercentile(99.9);
+    const avgRtt = rttHistogram.mean;
+    const p50 = rttHistogram.getValueAtPercentile(50);
+    const p95 = rttHistogram.getValueAtPercentile(95);
+    const p99 = rttHistogram.getValueAtPercentile(99);
+    const p999 = rttHistogram.getValueAtPercentile(99.9);
 
     result.RTTSummary = {
       AvgMs: Number(avgRtt.toFixed(3)),
@@ -171,15 +188,15 @@ function writeFinalResults(
       P95Ms: Number(p95.toFixed(3)),
       P99Ms: Number(p99.toFixed(3)),
       P999Ms: Number(p999.toFixed(3)),
-      totalCount: histogram.totalCount
+      totalCount: rttHistogram.totalCount
     };
 
-    console.log(`Avg RTT       ${avgRtt.toFixed(3)} ms`);
-    console.log(`P50 RTT       ${p50.toFixed(3)} ms`);
-    console.log(`P95 RTT       ${p95.toFixed(3)} ms`);
-    console.log(`P99 RTT       ${p99.toFixed(3)} ms`);
-    console.log(`P999 RTT      ${p999.toFixed(3)} ms`);
-    console.log(`Total Messages tracked latency      ${histogram.totalCount} messages`);
+    console.log(`Avg  RTT       ${avgRtt.toFixed(3)} ms`);
+    console.log(`P50  RTT       ${p50.toFixed(3)} ms`);
+    console.log(`P95  RTT       ${p95.toFixed(3)} ms`);
+    console.log(`P99  RTT       ${p99.toFixed(3)} ms`);
+    console.log(`P999 RTT       ${p999.toFixed(3)} ms`);
+    console.log(`Total Messages tracked latency      ${rttHistogram.totalCount} messages`);
   }
 
   console.log('#################################################');
@@ -192,5 +209,7 @@ function writeFinalResults(
 
 module.exports = {
   updateCLI,
-  writeFinalResults
+  writeFinalResults,
+  createRttHistogram,
+  RttAccumulator
 };
