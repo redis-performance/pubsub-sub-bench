@@ -2,7 +2,7 @@ const Redis = require('ioredis');
 const clusterKeySlot = require('cluster-key-slot');
 const { publisherRoutine } = require('./publisher');
 const { subscriberRoutine } = require('./subscriber');
-const { updateCLI, writeFinalResults } = require('./metrics');
+const { updateCLI, writeFinalResults, createRttHistogram, RttAccumulator } = require('./metrics');
 const seedrandom = require('seedrandom');
 
 async function runBenchmark(argv) {
@@ -25,8 +25,11 @@ async function runBenchmark(argv) {
   const totalConnectsRef = { value: 0 };
   const isRunningRef = { value: true };
   const messageRateTs = [];
-  const rttValues = [];
-  const rttArchive = [];
+  
+  // Create efficient RTT tracking
+  const rttAccumulator = argv['measure-rtt-latency'] ? new RttAccumulator() : null;
+  // Create histogram for RTT recording
+  const rttHistogram = argv['measure-rtt-latency'] ? createRttHistogram() : null;
 
   const redisOptions = {
     host: argv.host,
@@ -48,11 +51,12 @@ async function runBenchmark(argv) {
   let clients = [];
   let nodeAddresses = [];
   let slotClientMap = new Map();
+  let cluster = null;
   console.log(`Using ${argv['slot-refresh-interval']} slot-refresh-interval`);
   console.log(`Using ${argv['redis-timeout']} redis-timeout`);
 
   if (argv['oss-cluster-api-distribute-subscribers']) {
-    const cluster = new Redis.Cluster(
+    cluster = new Redis.Cluster(
       [
         {
           host: argv.host,
@@ -95,10 +99,12 @@ async function runBenchmark(argv) {
       }
 
       nodeAddresses.push(`${ip}:${port}`);
-      console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes`);
+      clients.push(client);
     }
+    console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes`);
   } else {
     const client = new Redis(redisOptions);
+    clients.push(client);
     // Redis Cluster hash slots range: 0 - 16383
     for (let slot = 0; slot <= 16383; slot++) {
       slotClientMap.set(slot, client);
@@ -111,7 +117,7 @@ async function runBenchmark(argv) {
   const totalChannels = argv['channel-maximum'] - argv['channel-minimum'] + 1;
   const totalSubscriptions = totalChannels * argv['subscribers-per-channel'];
   const totalExpectedMessages = totalSubscriptions * argv.messages;
-  const subscriptionsPerNode = Math.ceil(totalSubscriptions / clients.length);
+  const subscriptionsPerNode = Math.ceil(totalSubscriptions / nodeAddresses.length);
 
   if (argv['pool-size'] === 0) {
     redisOptions.connectionPoolSize = subscriptionsPerNode;
@@ -128,7 +134,60 @@ async function runBenchmark(argv) {
 
   const promises = [];
 
-  if (argv.mode.includes('subscribe')) {
+
+  if (argv.mode.includes('publish')) {
+    // Run publishers
+    totalPublishersRef.value = argv.clients;
+    console.log(`Starting ${argv.clients} publishers in ${argv.mode} mode`);
+    
+    for (let clientId = 1; clientId <= argv.clients; clientId++) {
+      const channels = [];
+      const numChannels = pickChannelCount(argv);
+
+      for (let i = 0; i < numChannels; i++) {
+        const channelId = randomChannel(argv);
+        const channelName = `${argv['subscriber-prefix']}${channelId}`;
+        channels.push(channelName);
+      }
+
+      const publisherName = `publisher#${clientId}`;
+      let client;
+
+      if (argv.mode === 'spublish' && argv['oss-cluster-api-distribute-subscribers']) {
+        // For sharded publish in cluster mode, get the appropriate client for the first channel
+        const slot = clusterKeySlot(channels[0]);
+        client = slotClientMap.get(slot);
+      } else {
+        // For regular publish or non-cluster, round-robin assignment
+        client = clients[clientId % clients.length];
+      }
+
+      if (argv.verbose) {
+        console.log(`Publisher ${clientId} targeting channels ${channels}`);
+      }
+
+      promises.push(
+        publisherRoutine(
+          publisherName,
+          channels,
+          argv.mode,
+          argv['measure-rtt-latency'],
+          argv.verbose,
+          argv['data-size'],
+          client,
+          isRunningRef,
+          totalMessagesRef
+        )
+      );
+      
+      totalConnectsRef.value++;
+      
+      if (clientId % 100 === 0) {
+        console.log(`Created ${clientId} publishers so far.`);
+      }
+    }
+  } else if (argv.mode.includes('subscribe')) {
+    // Only run subscribers
     if (argv['subscribers-placement-per-channel'] === 'dense') {
       for (let clientId = 1; clientId <= argv.clients; clientId++) {
         const channels = [];
@@ -166,13 +225,13 @@ async function runBenchmark(argv) {
             argv['measure-rtt-latency'],
             client,
             isRunningRef,
-            rttValues,
-            rttArchive,
+            rttAccumulator,
+            rttHistogram,
             totalMessagesRef,
             totalSubscribedRef,
             totalConnectsRef,
             argv.verbose,
-            argv.cliens
+            argv.clients
           )
         );
       }
@@ -182,39 +241,70 @@ async function runBenchmark(argv) {
     process.exit(1);
   }
 
-  const { startTime, now, perSecondStats } = await updateCLI(
-    argv['client-update-tick'],
-    argv.messages > 0 ? totalExpectedMessages : 0,
-    argv['test-time'],
-    argv['measure-rtt-latency'],
-    argv.mode,
-    isRunningRef,
-    totalMessagesRef,
-    totalConnectsRef,
-    totalSubscribedRef,
-    totalPublishersRef,
-    messageRateTs,
-    rttValues,
-    rttArchive,
-    () => {} // no-op, outputResults is handled after await
-  );
+  try {
+    const { startTime, now, perSecondStats } = await updateCLI(
+      argv['client-update-tick'],
+      argv.messages > 0 ? totalExpectedMessages : 0,
+      argv['test-time'],
+      argv['measure-rtt-latency'],
+      argv.mode,
+      isRunningRef,
+      totalMessagesRef,
+      totalConnectsRef,
+      totalSubscribedRef,
+      totalPublishersRef,
+      messageRateTs,
+      rttAccumulator,
+      rttHistogram,
+      () => {} // no-op, outputResults is handled after await
+    );
 
-  // Wait for all routines to finish
-  await Promise.all(promises);
+    // Wait for all routines to finish
+    console.log('Waiting for all clients to shut down cleanly...');
+    await Promise.all(promises);
 
-  // THEN output final results
-  writeFinalResults(
-    startTime,
-    now,
-    argv,
-    argv.mode,
-    totalMessagesRef.value,
-    totalSubscribedRef.value,
-    messageRateTs,
-    rttValues,
-    rttArchive,
-    perSecondStats
-  );
+    // THEN output final results
+    writeFinalResults(
+      startTime,
+      now,
+      argv,
+      argv.mode,
+      totalMessagesRef.value,
+      totalSubscribedRef.value,
+      messageRateTs,
+      rttAccumulator,
+      rttHistogram,
+      perSecondStats
+    );
+  } finally {
+    // Clean shutdown of primary clients
+    console.log('Shutting down primary Redis connections...');
+    
+    // Close cluster client if it exists
+    if (cluster) {
+      try {
+        await cluster.quit();
+        console.log('Cluster client disconnected successfully');
+      } catch (err) {
+        console.error('Error disconnecting cluster client:', err);
+      }
+    }
+    
+    // Close all standalone clients
+    const disconnectPromises = clients.map(async (client, i) => {
+      try {
+        await client.quit();
+        if (argv.verbose) {
+          console.log(`Node client #${i} disconnected successfully`);
+        }
+      } catch (err) {
+        console.error(`Error disconnecting node client #${i}:`, err);
+      }
+    });
+    
+    await Promise.all(disconnectPromises);
+    console.log('All Redis connections closed');
+  }
 
   // cleanly exit the process once done
   process.exit(0);
