@@ -150,7 +150,7 @@ function writeFinalResults(
   rttHistogram,
   perSecondStats
 ) {
-  const duration = (end - start);
+  const duration = (end - start)/1000;
   const messageRate = totalMessages / duration;
 
   console.log('#################################################');
