@@ -1,5 +1,5 @@
 function safeBigIntUs() {
-  return process.hrtime.bigint() / 1000n;
+  return Date.now();
 }
 
 async function subscriberRoutine(
@@ -70,10 +70,9 @@ async function subscriberRoutine(
 
     if (measureRTT) {
       try {
-        const now = process.hrtime.bigint() / 1000n;
-        const timestamp = BigInt(message); // µs
+        const now = Date.now();
+        const timestamp = Number(message); // µs
         const rtt = now - timestamp;
-
         if (rtt >= 0n) {
           rttValues.push(rtt);
           rttArchive.push(rtt);

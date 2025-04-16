@@ -68,9 +68,9 @@ function updateCLI(
       if (measureRTT) {
         const tickRttValues = rttValues.splice(0);
         if (tickRttValues.length > 0) {
-          const sum = tickRttValues.reduce((a, b) => a + b, 0n);
+          const sum = tickRttValues.reduce((a, b) => a + b, 0);
           const avgRtt = Number(sum) / tickRttValues.length;
-          avgRttMs = avgRtt / 1000;
+          avgRttMs = avgRtt;
           metrics.push(avgRttMs.toFixed(3));
         } else {
           metrics.push('--');
@@ -122,7 +122,7 @@ function writeFinalResults(
   rttArchive,
   perSecondStats
 ) {
-  const duration = (end - start) / 1000;
+  const duration = (end - start);
   const messageRate = totalMessages / duration;
 
   console.log('#################################################');
@@ -131,7 +131,7 @@ function writeFinalResults(
   console.log(`Message Rate: ${messageRate.toFixed(6)} msg/sec`);
 
   const result = {
-    StartTime: Math.floor(start / 1000),
+    StartTime: Math.floor(start),
     Duration: duration,
     Mode: mode,
     MessageRate: messageRate,
@@ -159,11 +159,11 @@ function writeFinalResults(
       if (val >= 0) histogram.recordValue(val);
     });
 
-    const avgRtt = histogram.mean / 1000;
-    const p50 = histogram.getValueAtPercentile(50) / 1000;
-    const p95 = histogram.getValueAtPercentile(95) / 1000;
-    const p99 = histogram.getValueAtPercentile(99) / 1000;
-    const p999 = histogram.getValueAtPercentile(99.9) / 1000;
+    const avgRtt = histogram.mean ;
+    const p50 = histogram.getValueAtPercentile(50);
+    const p95 = histogram.getValueAtPercentile(95);
+    const p99 = histogram.getValueAtPercentile(99);
+    const p999 = histogram.getValueAtPercentile(99.9);
 
     result.RTTSummary = {
       AvgMs: Number(avgRtt.toFixed(3)),
