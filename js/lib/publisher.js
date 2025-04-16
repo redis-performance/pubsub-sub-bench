@@ -22,7 +22,7 @@ async function publisherRoutine(
   while (isRunningRef.value) {
     let msg = payload;
     if (measureRTT) {
-      msg = process.hrtime.bigint() / 1000;
+      msg = process.hrtime.bigint() / 1000n;
     }
 
     for (const channel of channels) {
