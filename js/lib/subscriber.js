@@ -70,7 +70,7 @@ async function subscriberRoutine(
 
     if (measureRTT) {
       try {
-        const now = BigInt(Date.now()) * 1000n;
+        const now = process.hrtime.bigint() / 1000;
         const timestamp = BigInt(message); // µs
         const rtt = now - timestamp;
 
