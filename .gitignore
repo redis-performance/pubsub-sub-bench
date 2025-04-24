@@ -83,10 +83,7 @@ pubsub-sub-bench
 ehthumbs.db
 Thumbs.db
 
-
-# Json Results #
-################
-*.json
+package-lock.json
 
 # Coverage Results #
 ####################

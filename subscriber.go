@@ -92,8 +92,8 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 					time.Sleep(r.Delay())
 				}
 				if measureRTT {
-					now := time.Now().UnixMicro()
-					msg = strconv.FormatInt(now, 10)
+					now := time.Now().UnixMilli()
+					msg = strconv.FormatInt(int64(now), 10)
 				}
 				var err error
 				switch mode {

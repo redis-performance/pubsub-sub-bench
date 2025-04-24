@@ -10,5 +10,5 @@ Supports both **standalone** and **Redis OSS Cluster** modes, with support for `
 ## 📦 Installation
 
 ```bash
-cd pubsub-sub-bench/js
+cd pubsub-sub-bench/js/ioredis
 npm install
