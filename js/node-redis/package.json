@@ -12,8 +12,5 @@
     "hdr-histogram-js": "^3.0.0",
     "cli-progress": "^3.11.2",
     "seedrandom": "^3.0.5"
-  },
-  "engines": {
-    "node": ">=16.0.0"
   }
 }
