@@ -1,4 +1,3 @@
-// filepath: /Users/hristo.temelski/code/etc/pubsub-sub-bench/js/node-redis/lib/config.js
 const yargs = require('yargs');
 
 function parseArgs() {

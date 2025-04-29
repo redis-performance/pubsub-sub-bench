@@ -30,46 +30,41 @@ async function runBenchmark(argv) {
   // Create histogram for RTT recording
   const rttHistogram = argv['measure-rtt-latency'] ? createRttHistogram() : null;
 
+  const redisOptions = {
+    socket: {
+      host: argv.host,
+      port: argv.port
+    },
+    username: argv.user || undefined,
+    password: argv.a || undefined,
+    commandTimeout: argv['redis-timeout']
+  };
+
   let client;
   let nodeAddresses = [];
 
-  if (argv['oss-cluster-api-distribute-subscribers']) {
-    console.log('Using Redis Cluster mode');
+  console.log(`Using ${argv['slot-refresh-interval']} slot-refresh-interval`);
+  console.log(`Using ${argv['redis-timeout']} redis-timeout`);
+
+  if (argv['oss-cluster-api-distribute-subscribers'] === "true") {
+    // Use createCluster for Redis Cluster mode
     client = createCluster({
-      rootNodes: [{
-        socket: {
-          host: argv.host,
-          port: argv.port
-        },
-        password: argv.a || undefined,
-        username: argv.user || undefined
+      rootNodes: [{ 
+        url: `redis://${argv.host}:${argv.port}`
       }],
+      useReplicas: false,
       defaults: {
-        socket: {
-          connectTimeout: argv['redis-timeout'],
-          reconnectStrategy: false // disable auto-reconnect
-        }
+        username: argv.user || undefined,
+        password: argv.a || undefined,
+        commandTimeout: argv['redis-timeout']
       }
     });
-    
+
     await client.connect();
-    nodeAddresses = [`${argv.host}:${argv.port}`];
-    console.log('Cluster mode - connecting through cluster client');
   } else {
-    // Single node mode
-    client = createClient({
-      socket: {
-        host: argv.host,
-        port: argv.port,
-        connectTimeout: argv['redis-timeout'],
-        reconnectStrategy: false // disable auto-reconnect
-      },
-      password: argv.a || undefined,
-      username: argv.user || undefined
-    });
-    
+    // Standalone mode
+    client = createClient(redisOptions);
     await client.connect();
-    nodeAddresses = [`${argv.host}:${argv.port}`];
     console.log('Standalone mode - using single Redis instance');
   }
 
@@ -80,30 +75,8 @@ async function runBenchmark(argv) {
   console.log(`Will use a subscriber prefix of: ${argv['subscriber-prefix']}<channel id>`);
   console.log(`Total channels: ${totalChannels}`);
   console.log('Final setup used for benchmark:');
-  nodeAddresses.forEach((addr, i) => {
-    console.log(`Node #${i}: Address: ${addr}`);
-  });
 
   const promises = [];
-
-  function randomInt(min, max) {
-    if (min === max) return min;
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-
-  function pickChannelCount(argv) {
-    return randomInt(
-      argv['min-number-channels-per-subscriber'],
-      argv['max-number-channels-per-subscriber']
-    );
-  }
-
-  function randomChannel(argv) {
-    return (
-      Math.floor(Math.random() * (argv['channel-maximum'] - argv['channel-minimum'] + 1)) +
-      argv['channel-minimum']
-    );
-  }
 
   if (argv.mode.includes('publish')) {
     // Run publishers
@@ -159,7 +132,6 @@ async function runBenchmark(argv) {
         }
 
         const subscriberName = `subscriber#${clientId}`;
-
         const reconnectInterval = randomInt(
           argv['min-reconnect-interval'],
           argv['max-reconnect-interval']
@@ -213,15 +185,14 @@ async function runBenchmark(argv) {
       totalPublishersRef,
       messageRateTs,
       rttAccumulator,
-      rttHistogram,
-      () => {} // no-op, outputResults is handled after await
+      rttHistogram
     );
 
     // Wait for all routines to finish
     console.log('Waiting for all clients to shut down cleanly...');
     await Promise.all(promises);
 
-    // Output final results
+    // THEN output final results
     writeFinalResults(
       startTime,
       now,
@@ -234,19 +205,38 @@ async function runBenchmark(argv) {
       rttHistogram,
       perSecondStats
     );
-  } catch (err) {
-    console.error('Benchmark error:', err);
+  } finally {
+    // Clean shutdown of Redis connection
+    console.log('Shutting down Redis connection...');
+    try {
+      await client.quit();
+      console.log('Redis connection closed successfully');
+    } catch (err) {
+      console.error('Error disconnecting Redis client:', err);
+    }
   }
 
-  // Clean up and disconnect the main client
-  try {
-    await client.quit();
-  } catch (err) {
-    console.error('Error disconnecting main client:', err);
-  }
-
-  // Clean exit
+  // cleanly exit the process once done
   process.exit(0);
+}
+
+function randomInt(min, max) {
+  if (min === max) return min;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function pickChannelCount(argv) {
+  return randomInt(
+    argv['min-number-channels-per-subscriber'],
+    argv['max-number-channels-per-subscriber']
+  );
+}
+
+function randomChannel(argv) {
+  return (
+    Math.floor(Math.random() * (argv['channel-maximum'] - argv['channel-minimum'] + 1)) +
+    argv['channel-minimum']
+  );
 }
 
 module.exports = { runBenchmark };

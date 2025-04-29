@@ -92,3 +92,4 @@ coverage.txt
 # Profiler Results #
 ####################
 *.pprof
+/js/node-redis/node_modules/

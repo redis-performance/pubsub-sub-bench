@@ -1,6 +1,3 @@
-// filepath: /Users/hristo.temelski/code/etc/pubsub-sub-bench/js/node-redis/lib/publisher.js
-const { createClient } = require('redis');
-
 async function publisherRoutine(
   clientName,
   channels,
@@ -8,10 +5,9 @@ async function publisherRoutine(
   measureRTT,
   verbose,
   dataSize,
-  redisOptions,
+  client,
   isRunningRef,
-  totalMessagesRef,
-  rateLimiter
+  totalMessagesRef
 ) {
   if (verbose) {
     console.log(
@@ -22,27 +18,11 @@ async function publisherRoutine(
   }
 
   const payload = !measureRTT ? 'A'.repeat(dataSize) : '';
-  
-  // Create a new Redis client
-  const client = createClient(redisOptions);
-  
-  // Set up error handling
-  client.on('error', (err) => {
-    console.error(`[${clientName}] Redis error: ${err.message}`);
-  });
-  
+
   try {
-    // Connect to Redis
-    await client.connect();
-    
     while (isRunningRef.value) {
       for (const channel of channels) {
         try {
-          // Apply rate limiting if configured
-          if (rateLimiter) {
-            await rateLimiter.removeTokens(1);
-          }
-          
           let msg = payload;
           if (measureRTT) {
             msg = Date.now().toString();
@@ -55,24 +35,14 @@ async function publisherRoutine(
           }
           totalMessagesRef.value++;
         } catch (err) {
-          console.error(`[${clientName}] Error publishing to channel ${channel}:`, err);
+          console.error(`Error publishing to channel ${channel}:`, err);
         }
       }
     }
-  } catch (err) {
-    console.error(`[${clientName}] Redis connection error:`, err);
   } finally {
-    // Clean shutdown - disconnect the client
+    // Clean shutdown - client is managed by redisManager
     if (verbose) {
       console.log(`Publisher ${clientName} shutting down...`);
-    }
-    try {
-      await client.quit();
-      if (verbose) {
-        console.log(`Publisher ${clientName} disconnected successfully`);
-      }
-    } catch (err) {
-      console.error(`Error disconnecting publisher ${clientName}:`, err);
     }
   }
 }
