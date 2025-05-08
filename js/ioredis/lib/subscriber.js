@@ -1,7 +1,3 @@
-function safeBigIntUs() {
-  return Date.now();
-}
-
 async function subscriberRoutine(
   clientName,
   mode,

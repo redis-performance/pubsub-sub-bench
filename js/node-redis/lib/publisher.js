@@ -9,6 +9,7 @@ async function publisherRoutine(
   isRunningRef,
   totalMessagesRef
 ) {
+  await client.connect()
   if (verbose) {
     console.log(
       `Publisher ${clientName} started. Mode: ${mode} | Channels: ${channels.length} | Payload: ${

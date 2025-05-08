@@ -15,9 +15,11 @@ async function subscriberRoutine(
   verbose,
   totalClients
 ) {
-  async function handleMessage(channel, message) {
+  async function handleMessage(message, channel) {
     if (printMessages) {
-      console.log(`[${clientName}] Received message on channel ${channel}: ${message}`);
+      console.log(
+        `[${clientName}] Received message on channel ${channel}: ${message}`
+      );
     }
 
     if (measureRTT) {
@@ -33,7 +35,8 @@ async function subscriberRoutine(
 
   async function subscribe() {
     try {
-      if (mode === 'ssubscribe') {
+      await client.connect();
+      if (mode === "ssubscribe") {
         await client.sSubscribe(channels, handleMessage);
       } else {
         await client.subscribe(channels, handleMessage);
@@ -54,7 +57,7 @@ async function subscriberRoutine(
 
   async function unsubscribe() {
     try {
-      if (mode === 'ssubscribe') {
+      if (mode === "ssubscribe") {
         await client.sUnsubscribe(channels);
       } else {
         await client.unsubscribe(channels);
@@ -63,7 +66,9 @@ async function subscriberRoutine(
       totalSubscribedRef.value -= channels.length;
 
       if (verbose) {
-        console.log(`${clientName} unsubscribed from ${channels.length} channels`);
+        console.log(
+          `${clientName} unsubscribed from ${channels.length} channels`
+        );
       }
     } catch (err) {
       console.error(`Error in unsubscribe for ${clientName}:`, err);
@@ -77,35 +82,12 @@ async function subscriberRoutine(
   }
 
   try {
-    while (isRunningRef.value) {
-      const subscribed = await subscribe();
-      if (!subscribed) {
-        console.error(`${clientName} failed to subscribe, retrying...`);
-        continue;
-      }
-
-      if (reconnectInterval > 0) {
-        await new Promise(resolve => setTimeout(resolve, reconnectInterval));
-        if (isRunningRef.value) {
-          await unsubscribe();
-        }
-      } else {
-        // If no reconnect interval, just wait until shutdown
-        await new Promise(resolve => {
-          const checkInterval = setInterval(() => {
-            if (!isRunningRef.value) {
-              clearInterval(checkInterval);
-              resolve();
-            }
-          }, 100);
-        });
-      }
+    const subscribed = await subscribe();
+    if (!subscribed) {
+      console.error(`${clientName} failed to subscribe...`);
     }
-  } finally {
-    if (verbose) {
-      console.log(`Subscriber ${clientName} shutting down...`);
-    }
-    await unsubscribe();
+  } catch (err) {
+    console.error(`${clientName} raised error while subscribing...`);
   }
 }
 
