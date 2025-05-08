@@ -93,8 +93,6 @@ run_instance() {
 # Run the benchmark instances
 for (( i=1; i<=$INSTANCES; i++ )); do
     run_instance $i "$*"
-    # Add small delay to avoid startup conflicts
-    sleep 0.5
 done
 
 echo "All $INSTANCES benchmark instances have been started."
