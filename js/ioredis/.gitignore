@@ -9,7 +9,6 @@ yarn-error.log*
 *.out
 *.tmp
 *.pid
-*.json
 
 # OS junk
 .DS_Store

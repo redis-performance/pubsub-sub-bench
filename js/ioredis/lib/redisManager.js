@@ -211,10 +211,6 @@ async function runBenchmark(argv) {
           console.log(`Reconnect interval for ${subscriberName}: ${reconnectInterval}ms`);
         }
 
-        if (clientId % 100 === 0 || clientId === argv.clients) {
-          console.log(`${subscriberName} subscribing to ${channels.length} channels.`);
-        }
-
         promises.push(
           subscriberRoutine(
             subscriberName,
