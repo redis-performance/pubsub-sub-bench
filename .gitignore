@@ -83,7 +83,6 @@ pubsub-sub-bench
 ehthumbs.db
 Thumbs.db
 
-package-lock.json
 
 # Coverage Results #
 ####################
@@ -92,4 +91,4 @@ coverage.txt
 # Profiler Results #
 ####################
 *.pprof
-/js/node-redis/node_modules/
+/out/*
