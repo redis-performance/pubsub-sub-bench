@@ -1,4 +1,4 @@
-# pubsub-sub-bench (ioredis Edition)
+# pubsub-sub-bench (node-redis Edition)
 
 High-performance **Redis Pub/Sub benchmark tool**, written in Node.js.  
 Supports both **standalone** and **Redis OSS Cluster** modes, with support for `PUBLISH`, `SPUBLISH`, `SUBSCRIBE`, and `SSUBSCRIBE`.
