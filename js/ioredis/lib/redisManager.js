@@ -73,34 +73,10 @@ async function runBenchmark(argv) {
       }
     );
 
-    // Fetch slot info to build map
-    const slots = await cluster.cluster('slots');
-    if (!slots || slots.length === 0) {
-      throw new Error('Cluster has no slot assignments. Check node health.');
-    }
 
-    // Create a standalone client for each slot range
-    for (const [startSlot, endSlot, [ip, port]] of slots) {
-      const client = new Redis({
-        host: ip,
-        port,
-        username: argv.user || undefined,
-        password: argv.a || undefined,
-        maxRetriesPerRequest: 1,
-        enableReadyCheck: true,
-        lazyConnect: false,
-        connectTimeout: argv['redis-timeout'],
-        slotsRefreshInterval: argv['slot-refresh-interval']
-      });
 
-      // Save one entry per slot
-      for (let slot = startSlot; slot <= endSlot; slot++) {
-        slotClientMap.set(slot, client);
-      }
-
-      nodeAddresses.push(`${ip}:${port}`);
-      clients.push(client);
-    }
+    clients.push(cluster);
+    
     console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes`);
   } else {
     const client = new Redis(redisOptions);
@@ -153,14 +129,7 @@ async function runBenchmark(argv) {
       const publisherName = `publisher#${clientId}`;
       let client;
 
-      if (argv.mode === 'spublish' && argv['oss-cluster-api-distribute-subscribers']) {
-        // For sharded publish in cluster mode, get the appropriate client for the first channel
-        const slot = clusterKeySlot(channels[0]);
-        client = slotClientMap.get(slot);
-      } else {
-        // For regular publish or non-cluster, round-robin assignment
-        client = clients[clientId % clients.length];
-      }
+      client = clients[0]
 
       if (argv.verbose) {
         console.log(`Publisher ${clientId} targeting channels ${channels}`);
