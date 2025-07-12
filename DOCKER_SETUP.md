@@ -66,6 +66,9 @@ filipe958/pubsub-sub-bench:latest
 
 # Multi-platform build and push
 ./docker-build.sh -p linux/amd64,linux/arm64 --push
+
+# Run local validation tests (mimics GitHub Action)
+./docker-test.sh
 ```
 
 ### Prerequisites for Manual Push
@@ -115,6 +118,13 @@ docker run --rm --network redis-net filipe958/pubsub-sub-bench:latest \
 - Check workflow runs in **Actions** tab
 - View build logs and summaries
 - Monitor security scan results
+
+### PR Validation
+- **Automatic Docker build validation** on all pull requests
+- Tests both single-platform (`linux/amd64`) and multi-platform builds
+- Validates basic functionality (help, version commands)
+- Provides PR comments with build status and details
+- Prevents merging PRs with broken Docker builds
 
 ### Docker Hub
 - View images at: https://hub.docker.com/r/filipe958/pubsub-sub-bench

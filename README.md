@@ -2,6 +2,9 @@
 [![license](https://img.shields.io/github/license/redis-performance/pubsub-sub-bench.svg)](https://github.com/redis-performance/pubsub-sub-bench)
 [![GitHub issues](https://img.shields.io/github/release/redis-performance/pubsub-sub-bench.svg)](https://github.com/redis-performance/pubsub-sub-bench/releases/latest)
 [![codecov](https://codecov.io/github/redis-performance/pubsub-sub-bench/branch/main/graph/badge.svg?token=B6ISQSDK3Y)](https://codecov.io/github/redis-performance/pubsub-sub-bench)
+[![Unit Tests](https://github.com/redis-performance/pubsub-sub-bench/workflows/Unit%20Tests/badge.svg)](https://github.com/redis-performance/pubsub-sub-bench/actions/workflows/unit-tests.yml)
+[![Docker Build](https://github.com/redis-performance/pubsub-sub-bench/workflows/Docker%20Build%20-%20PR%20Validation/badge.svg)](https://github.com/redis-performance/pubsub-sub-bench/actions/workflows/docker-build-pr.yml)
+[![Docker Hub](https://img.shields.io/docker/pulls/filipe958/pubsub-sub-bench.svg)](https://hub.docker.com/r/filipe958/pubsub-sub-bench)
 
 
 ## Overview
@@ -16,6 +19,29 @@ Several aspects can dictate the overall system performance, like the:
 - Subscriber distribution per shard and channel (controlled on subscriber)
 
 ## Installation
+
+### Docker (Recommended)
+
+The easiest way to run pubsub-sub-bench is using Docker:
+
+```bash
+# Pull the latest image
+docker pull filipe958/pubsub-sub-bench:latest
+
+# Run with help
+docker run --rm filipe958/pubsub-sub-bench:latest --help
+
+# Example: Subscribe to channels
+docker run --rm --network=host filipe958/pubsub-sub-bench:latest \
+  -host localhost -port 6379 -mode subscribe \
+  -clients 10 -test-time 30
+
+# Example: With JSON output (mount current directory)
+docker run --rm -v $(pwd):/app/output --network=host filipe958/pubsub-sub-bench:latest \
+  -json-out-file results.json -host localhost -mode subscribe
+```
+
+For detailed Docker usage, see [DOCKER_SETUP.md](DOCKER_SETUP.md).
 
 ### Download Standalone binaries ( no Golang needed )
 
