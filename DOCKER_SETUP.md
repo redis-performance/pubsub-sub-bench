@@ -27,6 +27,19 @@ To enable automated Docker publishing, you need to configure the following secre
 
 ⚠️ **Important**: Use an access token, not your Docker Hub password, for better security.
 
+### Credential Validation
+
+All Docker publishing workflows include automatic credential validation:
+
+- **PR Validation**: Checks if credentials are available but continues without them (expected for forks)
+- **Master/Release Publishing**: **Requires** credentials and fails if not configured
+- **Local Testing**: Warns if credentials are missing but continues validation
+
+This ensures that:
+- External contributors can still validate Docker builds in PRs
+- Publishing workflows fail fast if credentials are misconfigured
+- Local development works regardless of credential status
+
 ## 🚀 Automated Publishing
 
 Once secrets are configured, Docker images will be automatically published:

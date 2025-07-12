@@ -42,12 +42,25 @@ jobs:
         echo "git_dirty=${GIT_DIRTY}" >> $GITHUB_OUTPUT
         echo "short_sha=${GIT_SHA:0:7}" >> $GITHUB_OUTPUT
 
+    - name: Check Docker Hub credentials
+      id: check_credentials
+      run: |
+        if [[ -n "${{ secrets.DOCKER_USERNAME }}" && -n "${{ secrets.DOCKER_PASSWORD }}" ]]; then
+          echo "credentials_available=true" >> $GITHUB_OUTPUT
+          echo "✅ Docker Hub credentials are configured"
+        else
+          echo "credentials_available=false" >> $GITHUB_OUTPUT
+          echo "⚠️ Docker Hub credentials not configured (DOCKER_USERNAME and/or DOCKER_PASSWORD secrets missing)"
+          echo "This is expected for forks and external PRs. Docker build validation will still work."
+        fi
+
     - name: Build Docker image (single platform)
       uses: docker/build-push-action@v5
       with:
         context: .
         platforms: linux/amd64
         push: false
+        load: true
         tags: ${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}
         build-args: |
           GIT_SHA=${{ steps.meta.outputs.git_sha }}
@@ -58,13 +71,23 @@ jobs:
     - name: Test Docker image
       run: |
         echo "Testing Docker image functionality..."
-        
+
+        # Verify image was built
+        if docker images | grep -q "${{ env.IMAGE_NAME }}"; then
+          echo "✅ Docker image built successfully"
+        else
+          echo "❌ Docker image not found"
+          exit 1
+        fi
+
         # Test help command
+        echo "Testing --help command..."
         docker run --rm ${{ env.IMAGE_NAME }}:pr-${{ github.event.number }} --help
-        
+
         # Test version output
+        echo "Testing --version command..."
         docker run --rm ${{ env.IMAGE_NAME }}:pr-${{ github.event.number }} --version
-        
+
         echo "✅ Docker image tests passed!"
 
     - name: Build multi-platform image (validation only)
@@ -85,6 +108,10 @@ jobs:
       uses: actions/github-script@v7
       with:
         script: |
+          const credentialsStatus = '${{ steps.check_credentials.outputs.credentials_available }}' === 'true'
+            ? '✅ Docker Hub credentials configured'
+            : '⚠️ Docker Hub credentials not configured (expected for forks)';
+
           const output = `## 🐳 Docker Build Validation
 
           ✅ **Docker build successful!**
@@ -95,11 +122,14 @@ jobs:
 
           **Git SHA:** \`${{ steps.meta.outputs.git_sha }}\`
 
+          **Docker Hub Status:** ${credentialsStatus}
+
           **Image details:**
           - Single platform: \`${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}\`
           - Multi-platform: \`${{ env.IMAGE_NAME }}:pr-${{ github.event.number }}-multiplatform\`
 
           **Tests performed:**
+          - ✅ Docker Hub credentials check
           - ✅ Help command execution
           - ✅ Version output validation
           - ✅ Multi-platform build validation

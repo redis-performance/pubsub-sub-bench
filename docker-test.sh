@@ -36,6 +36,17 @@ FULL_IMAGE_NAME="${IMAGE_NAME}:${TAG}"
 
 print_info "Starting Docker validation tests..."
 
+# Step 0: Check Docker Hub credentials (optional for local testing)
+print_step "Checking Docker Hub credentials..."
+if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
+    print_info "✅ Docker Hub credentials found in environment"
+elif docker info | grep -q "Username:"; then
+    print_info "✅ Already logged in to Docker Hub"
+else
+    print_warning "⚠️  Docker Hub credentials not found"
+    print_info "Set DOCKER_USERNAME and DOCKER_PASSWORD environment variables or run 'docker login' for publishing"
+fi
+
 # Step 1: Build the image
 print_step "Building Docker image..."
 if ./docker-build.sh -n "$IMAGE_NAME" -t "$TAG"; then
