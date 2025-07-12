@@ -335,6 +335,9 @@ func main() {
 
 	log.Println(fmt.Sprintf("Will use a subscriber prefix of: %s<channel id>", *subscribe_prefix))
 	log.Println(fmt.Sprintf("total_channels: %d", total_channels))
+	if *test_time != 0 {
+		log.Println(fmt.Sprintf("Will stop benchmark after test_time: %d", *test_time))
+	}
 
 	if *poolSizePtr == 0 {
 		poolSize = subscriptions_per_node
@@ -522,7 +525,7 @@ func main() {
 	w := new(tabwriter.Writer)
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
-	closed, start_time, duration, totalMessages, messageRateTs, rttValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel)
+	closed, start_time, duration, totalMessages, messageRateTs, rttValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel, *verbose)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 
 	if *cpuprofile != "" {
@@ -630,6 +633,7 @@ func updateCLI(
 	measureRTT bool,
 	mode string,
 	rttLatencyChannel chan int64,
+	verbose bool,
 ) (bool, time.Time, time.Duration, uint64, []float64, []int64) {
 
 	start := time.Now()
@@ -675,7 +679,9 @@ func updateCLI(
 			messageRate := float64(totalMessages-prevMessageCount) / float64(took.Seconds())
 			connectRate := float64(totalConnects-prevConnectCount) / float64(took.Seconds())
 
+			// Reset start time when first message arrives (for display purposes)
 			if prevMessageCount == 0 && totalMessages != 0 {
+				fmt.Printf("[DEBUG] Resetting timer given total messages are now > %d\n", totalMessages)
 				start = time.Now()
 			}
 			if totalMessages != 0 {
@@ -684,6 +690,21 @@ func updateCLI(
 			prevMessageCount = totalMessages
 			prevConnectCount = totalConnects
 			prevTime = now
+			// Check test-time condition BEFORE potentially resetting start time
+			if test_time > 0 && totalMessages != 0 {
+				elapsed := time.Since(start)
+				testDuration := time.Duration(test_time * int(time.Second))
+				if verbose {
+					fmt.Printf("[DEBUG] test_time=%d, elapsed=%.2fs, testDuration=%.2fs, totalMessages=%d\n",
+						test_time, elapsed.Seconds(), testDuration.Seconds(), totalMessages)
+				}
+				if elapsed >= testDuration {
+					if verbose {
+						fmt.Printf("[DEBUG] Test time reached! Stopping after %.2f seconds\n", elapsed.Seconds())
+					}
+					return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
+				}
+			}
 
 			// Metrics line
 			fmt.Fprintf(w, "%.0f\t%d\t%.2f\t%.2f\t", time.Since(start).Seconds(), totalMessages, messageRate, connectRate)
@@ -713,9 +734,6 @@ func updateCLI(
 			w.Flush()
 
 			if message_limit > 0 && totalMessages >= uint64(message_limit) {
-				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
-			}
-			if test_time > 0 && time.Since(start) >= time.Duration(test_time*int(time.Second)) && totalMessages != 0 {
 				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
 			}
 
