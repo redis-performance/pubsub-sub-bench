@@ -58,7 +58,7 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func publisherRoutine(clientName string, channels []string, mode string, measureRTT bool, verbose bool, dataSize int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client, useLimiter bool, rateLimiter *rate.Limiter) {
+func publisherRoutine(clientName string, channels []string, mode string, measureRTT bool, verbose bool, dataSize int, ctx context.Context, wg *sync.WaitGroup, client *redis.Client, useLimiter bool, rateLimiter *rate.Limiter, publishLatencyChannel chan int64, subscriberCountChannel chan int64) {
 	defer wg.Done()
 
 	if verbose {
@@ -112,15 +112,28 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 				} else {
 					msg = paddingPayload
 				}
+
+				// Measure publish latency
+				startPublish := time.Now().UnixNano()
+				var subscriberCount int64
 				var err error
 				switch mode {
 				case "spublish":
-					err = client.SPublish(ctx, ch, msg).Err()
+					subscriberCount, err = client.SPublish(ctx, ch, msg).Result()
 				default:
-					err = client.Publish(ctx, ch, msg).Err()
+					subscriberCount, err = client.Publish(ctx, ch, msg).Result()
 				}
+				publishLatency := time.Now().UnixNano() - startPublish
+
 				if err != nil {
 					log.Printf("Error publishing to channel %s: %v", ch, err)
+				} else {
+					// Send metrics to channels
+					publishLatencyChannel <- publishLatency
+					subscriberCountChannel <- subscriberCount
+					if verbose {
+						log.Printf("Published to %s: %d subscribers, latency: %d ns", ch, subscriberCount, publishLatency)
+					}
 				}
 				atomic.AddUint64(&totalMessages, 1)
 			}
@@ -414,7 +427,9 @@ func main() {
 		}
 		pprof.StartCPUProfile(f)
 	}
-	rttLatencyChannel := make(chan int64, 100000) // Channel for RTT measurements. buffer of 100K messages to process
+	rttLatencyChannel := make(chan int64, 1000000)      // Channel for RTT measurements. buffer of 1M messages to process
+	publishLatencyChannel := make(chan int64, 1000000)  // Channel for publish latency measurements
+	subscriberCountChannel := make(chan int64, 1000000) // Channel for subscriber count tracking
 	totalCreatedClients := 0
 	if strings.Contains(*mode, "publish") {
 		var requestRate = Inf
@@ -472,7 +487,7 @@ func main() {
 			}
 
 			wg.Add(1)
-			go publisherRoutine(publisherName, channels, *mode, *measureRTT, *verbose, *dataSize, ctx, &wg, client, useRateLimiter, rateLimiter)
+			go publisherRoutine(publisherName, channels, *mode, *measureRTT, *verbose, *dataSize, ctx, &wg, client, useRateLimiter, rateLimiter, publishLatencyChannel, subscriberCountChannel)
 			atomic.AddInt64(&totalPublishers, 1)
 			atomic.AddUint64(&totalConnects, 1)
 		}
@@ -548,7 +563,7 @@ func main() {
 	w := new(tabwriter.Writer)
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
-	closed, start_time, duration, totalMessages, messageRateTs, rttValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel, *verbose)
+	closed, start_time, duration, totalMessages, messageRateTs, rttValues, publishLatencyValues, subscriberCountValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel, publishLatencyChannel, subscriberCountChannel, *verbose)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 
 	if *cpuprofile != "" {
@@ -558,22 +573,60 @@ func main() {
 	fmt.Fprintf(w, "Mode: %s\n", *mode)
 	fmt.Fprintf(w, "Total Duration: %f Seconds\n", duration.Seconds())
 	fmt.Fprintf(w, "Message Rate: %f msg/sec\n", messageRate)
-	if *measureRTT && (*mode != "publish" && *mode != "spublish") {
-		hist := hdrhistogram.New(1, 10_000_000, 3) // 1us to 10s, 3 sig digits
-		for _, rtt := range rttValues {
-			_ = hist.RecordValue(rtt)
+
+	if strings.Contains(*mode, "publish") {
+		// Publisher mode: show publish latency and subscriber count stats
+		if len(publishLatencyValues) > 0 {
+			hist := hdrhistogram.New(1, 10_000_000, 3) // 1ns to 10s, 3 sig digits
+			for _, latency := range publishLatencyValues {
+				_ = hist.RecordValue(latency)
+			}
+			avg := hist.Mean()
+			p50 := hist.ValueAtQuantile(50.0)
+			p95 := hist.ValueAtQuantile(95.0)
+			p99 := hist.ValueAtQuantile(99.0)
+			p999 := hist.ValueAtQuantile(99.9)
+			fmt.Fprintf(w, "Avg Publish Latency  %.3f ms\n", avg/1000000.0)
+			fmt.Fprintf(w, "P50 Publish Latency  %.3f ms\n", float64(p50)/1000000.0)
+			fmt.Fprintf(w, "P95 Publish Latency  %.3f ms\n", float64(p95)/1000000.0)
+			fmt.Fprintf(w, "P99 Publish Latency  %.3f ms\n", float64(p99)/1000000.0)
+			fmt.Fprintf(w, "P999 Publish Latency %.3f ms\n", float64(p999)/1000000.0)
 		}
-		avg := hist.Mean()
-		p50 := hist.ValueAtQuantile(50.0)
-		p95 := hist.ValueAtQuantile(95.0)
-		p99 := hist.ValueAtQuantile(99.0)
-		p999 := hist.ValueAtQuantile(99.9)
-		fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000000.0)
-		fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000000.0)
-		fmt.Fprintf(w, "P95 RTT       %.3f ms\n", float64(p95)/1000000.0)
-		fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000000.0)
-		fmt.Fprintf(w, "P999 RTT       %.3f ms\n", float64(p999)/1000000.0)
-	} else {
+
+		if len(subscriberCountValues) > 0 {
+			hist := hdrhistogram.New(0, 1_000_000, 3) // 0 to 1M subscribers, 3 sig digits
+			for _, count := range subscriberCountValues {
+				_ = hist.RecordValue(count)
+			}
+			avg := hist.Mean()
+			p50 := hist.ValueAtQuantile(50.0)
+			p95 := hist.ValueAtQuantile(95.0)
+			p99 := hist.ValueAtQuantile(99.0)
+			p999 := hist.ValueAtQuantile(99.9)
+			fmt.Fprintf(w, "Avg Subscribers      %.1f  (per-node in cluster mode)\n", avg)
+			fmt.Fprintf(w, "P50 Subscribers      %d\n", p50)
+			fmt.Fprintf(w, "P95 Subscribers      %d\n", p95)
+			fmt.Fprintf(w, "P99 Subscribers      %d\n", p99)
+			fmt.Fprintf(w, "P999 Subscribers     %d\n", p999)
+		}
+	} else if *measureRTT {
+		// Subscriber mode with RTT measurement
+		if len(rttValues) > 0 {
+			hist := hdrhistogram.New(1, 10_000_000, 3) // 1ns to 10s, 3 sig digits
+			for _, rtt := range rttValues {
+				_ = hist.RecordValue(rtt)
+			}
+			avg := hist.Mean()
+			p50 := hist.ValueAtQuantile(50.0)
+			p95 := hist.ValueAtQuantile(95.0)
+			p99 := hist.ValueAtQuantile(99.0)
+			p999 := hist.ValueAtQuantile(99.9)
+			fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000000.0)
+			fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000000.0)
+			fmt.Fprintf(w, "P95 RTT       %.3f ms\n", float64(p95)/1000000.0)
+			fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000000.0)
+			fmt.Fprintf(w, "P999 RTT      %.3f ms\n", float64(p999)/1000000.0)
+		}
 	}
 	fmt.Fprintf(w, "#################################################\n")
 	fmt.Fprint(w, "\r\n")
@@ -656,8 +709,10 @@ func updateCLI(
 	measureRTT bool,
 	mode string,
 	rttLatencyChannel chan int64,
+	publishLatencyChannel chan int64,
+	subscriberCountChannel chan int64,
 	verbose bool,
-) (bool, time.Time, time.Duration, uint64, []float64, []int64) {
+) (bool, time.Time, time.Duration, uint64, []float64, []int64, []int64, []int64) {
 
 	start := time.Now()
 	prevTime := time.Now()
@@ -666,27 +721,28 @@ func updateCLI(
 	messageRateTs := []float64{}
 	tickRttValues := []int64{}
 	rttValues := []int64{}
+	tickPublishLatencyValues := []int64{}
+	publishLatencyValues := []int64{}
+	tickSubscriberCountValues := []int64{}
+	subscriberCountValues := []int64{}
 
 	w.Init(os.Stdout, 25, 0, 1, ' ', tabwriter.AlignRight)
 
 	// Header
-	if measureRTT {
-		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
+	fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
 
-		if strings.Contains(mode, "subscribe") {
-			fmt.Fprint(w, "Active subscriptions\t")
-		} else {
-			fmt.Fprint(w, "Active publishers\t")
+	if strings.Contains(mode, "subscribe") {
+		fmt.Fprint(w, "Active subscriptions\t")
+		if measureRTT {
+			fmt.Fprint(w, "Avg RTT (ms)\t")
 		}
-		fmt.Fprint(w, "Avg RTT (ms)\t\n")
 	} else {
-		fmt.Fprint(w, "Test Time\tTotal Messages\t Message Rate \tConnect Rate \t")
-		if strings.Contains(mode, "subscribe") {
-			fmt.Fprint(w, "Active subscriptions\t\n")
-		} else {
-			fmt.Fprint(w, "Active publishers\t\n")
-		}
+		// Publisher mode
+		fmt.Fprint(w, "Active publishers\t")
+		fmt.Fprint(w, "Pub Latency (ms)\t")
+		fmt.Fprint(w, "Avg Subs per channel per node\t")
 	}
+	fmt.Fprint(w, "\n")
 	w.Flush()
 
 	// Main loop
@@ -695,6 +751,14 @@ func updateCLI(
 		case rtt := <-rttLatencyChannel:
 			rttValues = append(rttValues, rtt)
 			tickRttValues = append(tickRttValues, rtt)
+
+		case publishLatency := <-publishLatencyChannel:
+			publishLatencyValues = append(publishLatencyValues, publishLatency)
+			tickPublishLatencyValues = append(tickPublishLatencyValues, publishLatency)
+
+		case subscriberCount := <-subscriberCountChannel:
+			subscriberCountValues = append(subscriberCountValues, subscriberCount)
+			tickSubscriberCountValues = append(tickSubscriberCountValues, subscriberCount)
 
 		case <-tick.C:
 			now := time.Now()
@@ -725,7 +789,7 @@ func updateCLI(
 					if verbose {
 						fmt.Printf("[DEBUG] Test time reached! Stopping after %.2f seconds\n", elapsed.Seconds())
 					}
-					return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
+					return true, start, time.Since(start), totalMessages, messageRateTs, rttValues, publishLatencyValues, subscriberCountValues
 				}
 			}
 
@@ -738,7 +802,36 @@ func updateCLI(
 				fmt.Fprintf(w, "%d\t", atomic.LoadInt64(&totalPublishers))
 			}
 
-			if measureRTT {
+			// For publisher mode, show publish latency instead of RTT
+			if strings.Contains(mode, "publish") {
+				var avgPublishLatencyMs float64
+				if len(tickPublishLatencyValues) > 0 {
+					var total int64
+					for _, v := range tickPublishLatencyValues {
+						total += v
+					}
+					avgPublishLatencyMs = float64(total) / float64(len(tickPublishLatencyValues)) / 1000000.0
+					tickPublishLatencyValues = tickPublishLatencyValues[:0]
+					fmt.Fprintf(w, "%.3f\t", avgPublishLatencyMs)
+				} else {
+					fmt.Fprintf(w, "--\t")
+				}
+
+				// Show average subscriber count
+				var avgSubscriberCount float64
+				if len(tickSubscriberCountValues) > 0 {
+					var total int64
+					for _, v := range tickSubscriberCountValues {
+						total += v
+					}
+					avgSubscriberCount = float64(total) / float64(len(tickSubscriberCountValues))
+					tickSubscriberCountValues = tickSubscriberCountValues[:0]
+					fmt.Fprintf(w, "%.1f\t", avgSubscriberCount)
+				} else {
+					fmt.Fprintf(w, "--\t")
+				}
+			} else if measureRTT {
+				// For subscriber mode with RTT measurement
 				var avgRTTms float64
 				if len(tickRttValues) > 0 {
 					var total int64
@@ -757,12 +850,12 @@ func updateCLI(
 			w.Flush()
 
 			if message_limit > 0 && totalMessages >= uint64(message_limit) {
-				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
+				return true, start, time.Since(start), totalMessages, messageRateTs, rttValues, publishLatencyValues, subscriberCountValues
 			}
 
 		case <-c:
 			fmt.Println("received Ctrl-c - shutting down")
-			return true, start, time.Since(start), totalMessages, messageRateTs, rttValues
+			return true, start, time.Since(start), totalMessages, messageRateTs, rttValues, publishLatencyValues, subscriberCountValues
 		}
 	}
 }
