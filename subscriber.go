@@ -126,7 +126,8 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 				publishLatency := time.Now().UnixNano() - startPublish
 
 				if err != nil {
-					log.Printf("Error publishing to channel %s: %v", ch, err)
+					log.Printf("Publisher %s: error publishing to channel %s: %v", clientName, ch, err)
+					// Don't send metrics on error, but still count the message attempt
 				} else {
 					// Send metrics to channels
 					publishLatencyChannel <- publishLatency
@@ -218,11 +219,34 @@ func subscriberRoutine(clientName, mode string, channels []string, verbose bool,
 			// Handle messages
 			msg, err := pubsub.ReceiveMessage(ctx)
 			if err != nil {
-				// Handle Redis connection errors, e.g., reconnect immediately
+				// Handle Redis connection errors
 				if err == redis.Nil || err == context.DeadlineExceeded || err == context.Canceled {
 					continue
 				}
-				panic(err)
+				// Connection error (EOF, network error, etc.) - attempt to reconnect
+				log.Printf("Subscriber %s: connection error: %v - attempting to reconnect\n", clientName, err)
+
+				// Close the bad connection
+				if pubsub != nil {
+					pubsub.Close()
+					atomic.AddInt64(&totalSubscribedChannels, int64(-len(channels)))
+				}
+
+				// Wait a bit before reconnecting
+				time.Sleep(100 * time.Millisecond)
+
+				// Resubscribe
+				switch mode {
+				case "ssubscribe":
+					pubsub = client.SSubscribe(ctx, channels...)
+				default:
+					pubsub = client.Subscribe(ctx, channels...)
+				}
+				atomic.AddInt64(&totalSubscribedChannels, int64(len(channels)))
+				atomic.AddUint64(&totalConnects, 1)
+
+				log.Printf("Subscriber %s: reconnected successfully\n", clientName)
+				continue
 			}
 			if verbose {
 				log.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
