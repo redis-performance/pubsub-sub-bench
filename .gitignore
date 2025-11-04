@@ -87,6 +87,8 @@ Thumbs.db
 # Coverage Results #
 ####################
 coverage.txt
+.coverdata/
+pubsub-sub-bench-test
 
 # Profiler Results #
 ####################

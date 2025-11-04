@@ -97,7 +97,7 @@ Usage of ./pubsub-sub-bench:
   -cpuprofile string
     	write cpu profile to file
   -data-size int
-    	Payload size in bytes. In RTT mode, timestamp (13 bytes) + space + padding to reach this size. (default 128)
+    	Payload size in bytes. In RTT mode, timestamp (19 bytes) + space + padding to reach this size. (default 128)
   -host string
     	redis host. (default "127.0.0.1")
   -json-out-file string
