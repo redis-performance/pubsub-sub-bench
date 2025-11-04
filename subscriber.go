@@ -31,6 +31,7 @@ const (
 	redisTLSCert               = "tls_cert"
 	redisTLSKey                = "tls_key"
 	redisTLSInsecureSkipVerify = "tls_insecure_skip_verify"
+	timestampSize              = 13 // UnixMilli() produces 13-digit number
 )
 
 const Inf = rate.Limit(math.MaxFloat64)
@@ -65,16 +66,24 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 			clientName, mode, len(channels),
 			func() string {
 				if measureRTT {
-					return "RTT timestamp"
+					return fmt.Sprintf("RTT timestamp + padding to %d bytes", dataSize)
 				}
 				return fmt.Sprintf("fixed size %d bytes", dataSize)
 			}(),
 		)
 	}
 
-	var payload string
-	if !measureRTT {
-		payload = strings.Repeat("A", dataSize)
+	// Pre-generate payload once per goroutine
+	// For RTT mode: we'll use a template with padding that we'll prepend timestamp to
+	// Timestamp format: 13 bytes (e.g., "1762249648882")
+	// Format: "<timestamp> <padding>" to reach dataSize
+	var paddingPayload string
+	if measureRTT && dataSize > timestampSize+1 {
+		// +1 for space separator
+		paddingSize := dataSize - timestampSize - 1
+		paddingPayload = strings.Repeat("A", paddingSize)
+	} else if !measureRTT {
+		paddingPayload = strings.Repeat("A", dataSize)
 	}
 
 	for {
@@ -84,7 +93,7 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 			return
 
 		default:
-			msg := payload
+			var msg string
 
 			for _, ch := range channels {
 				if useLimiter {
@@ -93,7 +102,15 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 				}
 				if measureRTT {
 					now := time.Now().UnixMilli()
-					msg = strconv.FormatInt(int64(now), 10)
+					if dataSize > timestampSize+1 {
+						// Format: "<timestamp> <padding>"
+						msg = strconv.FormatInt(int64(now), 10) + " " + paddingPayload
+					} else {
+						// Just timestamp if dataSize is too small
+						msg = strconv.FormatInt(int64(now), 10)
+					}
+				} else {
+					msg = paddingPayload
 				}
 				var err error
 				switch mode {
@@ -198,15 +215,21 @@ func subscriberRoutine(clientName, mode string, channels []string, verbose bool,
 				log.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
 			}
 			if measureRTT {
-				if ts, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
-					now := time.Now().UnixMicro()
+				now := time.Now().UnixMicro()
+				// Extract timestamp from payload (format: "<timestamp> <padding>" or just "<timestamp>")
+				// Timestamp is always 13 bytes (UnixMilli)
+				timestampStr := msg.Payload
+				if len(msg.Payload) > timestampSize {
+					timestampStr = msg.Payload[:timestampSize]
+				}
+				if ts, err := strconv.ParseInt(timestampStr, 10, 64); err == nil {
 					rtt := now - ts
 					rttLatencyChannel <- rtt
 					if verbose {
 						log.Printf("RTT measured: %d ms\n", rtt/1000)
 					}
 				} else {
-					log.Printf("Invalid timestamp in message: %s, err: %v\n", msg.Payload, err)
+					log.Printf("Invalid timestamp in message: %s, err: %v\n", timestampStr, err)
 				}
 			}
 			atomic.AddUint64(&totalMessages, 1)
