@@ -31,7 +31,7 @@ const (
 	redisTLSCert               = "tls_cert"
 	redisTLSKey                = "tls_key"
 	redisTLSInsecureSkipVerify = "tls_insecure_skip_verify"
-	timestampSize              = 13 // UnixMilli() produces 13-digit number
+	timestampSize              = 19 // UnixNano() produces 19-digit number
 )
 
 const Inf = rate.Limit(math.MaxFloat64)
@@ -75,7 +75,7 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 
 	// Pre-generate payload once per goroutine
 	// For RTT mode: we'll use a template with padding that we'll prepend timestamp to
-	// Timestamp format: 13 bytes (e.g., "1762249648882")
+	// Timestamp format: 19 bytes (e.g., "1762259663660769761")
 	// Format: "<timestamp> <padding>" to reach dataSize
 	var paddingPayload string
 	if measureRTT && dataSize > timestampSize+1 {
@@ -101,7 +101,7 @@ func publisherRoutine(clientName string, channels []string, mode string, measure
 					time.Sleep(r.Delay())
 				}
 				if measureRTT {
-					now := time.Now().UnixMilli()
+					now := time.Now().UnixNano()
 					if dataSize > timestampSize+1 {
 						// Format: "<timestamp> <padding>"
 						msg = strconv.FormatInt(int64(now), 10) + " " + paddingPayload
@@ -215,9 +215,9 @@ func subscriberRoutine(clientName, mode string, channels []string, verbose bool,
 				log.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Payload))
 			}
 			if measureRTT {
-				now := time.Now().UnixMicro()
+				now := time.Now().UnixNano()
 				// Extract timestamp from payload (format: "<timestamp> <padding>" or just "<timestamp>")
-				// Timestamp is always 13 bytes (UnixMilli)
+				// Timestamp is always 19 bytes (UnixNano)
 				timestampStr := msg.Payload
 				if len(msg.Payload) > timestampSize {
 					timestampStr = msg.Payload[:timestampSize]
@@ -226,7 +226,7 @@ func subscriberRoutine(clientName, mode string, channels []string, verbose bool,
 					rtt := now - ts
 					rttLatencyChannel <- rtt
 					if verbose {
-						log.Printf("RTT measured: %d ms\n", rtt/1000)
+						log.Printf("RTT measured: %d ns\n", rtt)
 					}
 				} else {
 					log.Printf("Invalid timestamp in message: %s, err: %v\n", timestampStr, err)
@@ -244,7 +244,7 @@ func main() {
 	rps := flag.Int64("rps", 0, "Max rps for publisher mode. If 0 no limit is applied and the DB is stressed up to maximum.")
 	rpsburst := flag.Int64("rps-burst", 0, "Max rps burst for publisher mode. If 0 the allowed burst will be the amount of clients.")
 	password := flag.String("a", "", "Password for Redis Auth.")
-	dataSize := flag.Int("data-size", 128, "Payload size in bytes. In RTT mode, timestamp (13 bytes) + space + padding to reach this size.")
+	dataSize := flag.Int("data-size", 128, "Payload size in bytes. In RTT mode, timestamp (19 bytes) + space + padding to reach this size.")
 	mode := flag.String("mode", "subscribe", "Mode: 'subscribe', 'ssubscribe', 'publish', or 'spublish'.")
 	username := flag.String("user", "", "Used to send ACL style 'AUTH username pass'. Needs -a.")
 	subscribers_placement := flag.String("subscribers-placement-per-channel", "dense", "(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner.")
