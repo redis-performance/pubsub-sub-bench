@@ -568,11 +568,11 @@ func main() {
 		p95 := hist.ValueAtQuantile(95.0)
 		p99 := hist.ValueAtQuantile(99.0)
 		p999 := hist.ValueAtQuantile(99.9)
-		fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000.0)
-		fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000.0)
-		fmt.Fprintf(w, "P95 RTT       %.3f ms\n", float64(p95)/1000.0)
-		fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000.0)
-		fmt.Fprintf(w, "P999 RTT       %.3f ms\n", float64(p999)/1000.0)
+		fmt.Fprintf(w, "Avg RTT       %.3f ms\n", avg/1000000.0)
+		fmt.Fprintf(w, "P50 RTT       %.3f ms\n", float64(p50)/1000000.0)
+		fmt.Fprintf(w, "P95 RTT       %.3f ms\n", float64(p95)/1000000.0)
+		fmt.Fprintf(w, "P99 RTT       %.3f ms\n", float64(p99)/1000000.0)
+		fmt.Fprintf(w, "P999 RTT       %.3f ms\n", float64(p999)/1000000.0)
 	} else {
 	}
 	fmt.Fprintf(w, "#################################################\n")
@@ -745,7 +745,7 @@ func updateCLI(
 					for _, v := range tickRttValues {
 						total += v
 					}
-					avgRTTms = float64(total) / float64(len(tickRttValues)) / 1000.0
+					avgRTTms = float64(total) / float64(len(tickRttValues)) / 1000000.0
 					tickRttValues = tickRttValues[:0]
 					fmt.Fprintf(w, "%.3f\t", avgRTTms)
 				} else {
