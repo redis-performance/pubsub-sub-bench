@@ -91,11 +91,13 @@ Usage of ./pubsub-sub-bench:
   -client-output-buffer-limit-pubsub string
     	Specify client output buffer limits for clients subscribed to at least one pubsub channel or pattern. If the value specified is different that the one present on the DB, this setting will apply.
   -client-update-tick int
-    	client update tick. (default 1)
+    	client update tick in seconds. (default 1)
   -clients int
     	Number of parallel connections. (default 50)
   -cpuprofile string
     	write cpu profile to file
+  -data-size int
+    	Payload size in bytes. In RTT mode, timestamp (13 bytes) + space + padding to reach this size. (default 128)
   -host string
     	redis host. (default "127.0.0.1")
   -json-out-file string
@@ -103,17 +105,19 @@ Usage of ./pubsub-sub-bench:
   -max-number-channels-per-subscriber int
     	max number of channels to subscribe to, per connection. (default 1)
   -max-reconnect-interval int
-    	max reconnect interval. if 0 disable (s)unsubscribe/(s)ubscribe.
+    	max reconnect interval in milliseconds. if 0 disable (s)unsubscribe/(s)ubscribe.
+  -measure-rtt-latency
+    	Enable RTT latency measurement. Publisher sends timestamp in message, subscriber measures round-trip time.
   -messages int
-    	Number of total messages per subscriber per channel.
+    	Number of total messages per subscriber per channel. Mutually exclusive with --test-time.
   -min-number-channels-per-subscriber int
     	min number of channels to subscribe to, per connection. (default 1)
   -min-reconnect-interval int
-    	min reconnect interval. if 0 disable (s)unsubscribe/(s)ubscribe.
+    	min reconnect interval in milliseconds. if 0 disable (s)unsubscribe/(s)ubscribe.
   -mode string
-    	Subscribe mode. Either 'subscribe' or 'ssubscribe'. (default "subscribe")
+    	Mode: 'subscribe', 'ssubscribe', 'publish', or 'spublish'. (default "subscribe")
   -oss-cluster-api-distribute-subscribers
-    	read cluster slots and distribute subscribers among them.
+    	read cluster slots and distribute subscribers among them (Redis OSS Cluster mode).
   -pool_size int
     	Maximum number of socket connections per node.
   -port string
@@ -126,14 +130,18 @@ Usage of ./pubsub-sub-bench:
     	determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts. (default 30s)
   -resp int
     	redis command response protocol (2 - RESP 2, 3 - RESP 3) (default 2)
+  -rps int
+    	Max rps for publisher mode. If 0 no limit is applied and the DB is stressed up to maximum.
+  -rps-burst int
+    	Max rps burst for publisher mode. If 0 the allowed burst will be the amount of clients.
   -subscriber-prefix string
-    	prefix for subscribing to channel, used in conjunction with key-minimum and key-maximum. (default "channel-")
+    	prefix for subscribing to channel, used in conjunction with channel-minimum and channel-maximum. (default "channel-")
   -subscribers-per-channel int
     	number of subscribers per channel. (default 1)
   -subscribers-placement-per-channel string
     	(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner. (default "dense")
   -test-time int
-    	Number of seconds to run the test, after receiving the first message.
+    	Number of seconds to run the test, after receiving the first message. Mutually exclusive with --messages.
   -user string
     	Used to send ACL style 'AUTH username pass'. Needs -a.
   -verbose
@@ -142,17 +150,83 @@ Usage of ./pubsub-sub-bench:
     	print version and exit.
 ```
 
-### Example usage: create 10 subscribers that will subscribe to 2000 channels
+## Examples
+
+### Example 1: Create 10 subscribers that will subscribe to 2000 channels
 
 Subscriber
 
-```
-./pubsub-sub-bench --clients 10  --channel-maximum 2000 --channel-minimum 1 -min-number-channels-per-subscriber 2000 -max-number-channels-per-subscriber 2000
+```bash
+./pubsub-sub-bench --clients 10 --channel-maximum 2000 --channel-minimum 1 \
+  --min-number-channels-per-subscriber 2000 --max-number-channels-per-subscriber 2000
 ```
 
-Publisher
+Publisher (using memtier_benchmark)
 
+```bash
+memtier_benchmark --key-prefix "channel-" --key-maximum 2000 --key-minimum 1 \
+  --command "PUBLISH __key__ __data__" --test-time 60 --pipeline 10
 ```
-memtier_benchmark --key-prefix "channel-" --key-maximum 2000 --key-minimum 1 --command "PUBLISH __key__ __data__" --test-time 60 --pipeline 10
+
+### Example 2: Built-in publisher mode with rate limiting
+
+Publisher (using pubsub-sub-bench)
+
+```bash
+./pubsub-sub-bench --mode publish --clients 5 --channel-maximum 100 --channel-minimum 1 \
+  --min-number-channels-per-subscriber 10 --max-number-channels-per-subscriber 10 \
+  --rps 10000 --data-size 256 --test-time 60
 ```
+
+Subscriber
+
+```bash
+./pubsub-sub-bench --mode subscribe --clients 10 --channel-maximum 100 --channel-minimum 1 \
+  --subscribers-per-channel 1 --test-time 60
+```
+
+### Example 3: RTT latency measurement with configurable payload size
+
+Publisher with RTT measurement
+
+```bash
+./pubsub-sub-bench --mode publish --clients 5 --channel-maximum 50 --channel-minimum 1 \
+  --measure-rtt-latency --data-size 512 --rps 5000 --test-time 30
+```
+
+Subscriber with RTT measurement
+
+```bash
+./pubsub-sub-bench --mode subscribe --clients 10 --channel-maximum 50 --channel-minimum 1 \
+  --measure-rtt-latency --test-time 30
+```
+
+The RTT mode will display average round-trip latency in milliseconds. The `--data-size` parameter ensures messages are 512 bytes (timestamp + padding).
+
+### Example 4: Sharded Pub/Sub (SSUBSCRIBE/SPUBLISH)
+
+Publisher using sharded pub/sub
+
+```bash
+./pubsub-sub-bench --mode spublish --clients 5 --channel-maximum 100 --channel-minimum 1 \
+  --data-size 128 --test-time 60
+```
+
+Subscriber using sharded pub/sub
+
+```bash
+./pubsub-sub-bench --mode ssubscribe --clients 10 --channel-maximum 100 --channel-minimum 1 \
+  --subscribers-per-channel 2 --test-time 60
+```
+
+### Example 5: Redis OSS Cluster with distributed subscribers
+
+```bash
+./pubsub-sub-bench --mode subscribe --host cluster-node-1 --port 6379 \
+  --oss-cluster-api-distribute-subscribers \
+  --clients 50 --channel-maximum 1000 --channel-minimum 1 \
+  --subscribers-placement-per-channel sparse --test-time 120
+```
+
+This will distribute subscribers across cluster nodes in a round-robin manner.
 
