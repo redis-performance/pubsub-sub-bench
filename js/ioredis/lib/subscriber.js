@@ -67,7 +67,15 @@ async function subscriberRoutine(
     if (measureRTT) {
       try {
         const now = Date.now();
-        const timestamp = Number(message); // Timestamp from publisher
+        // Extract timestamp from payload (format: "<timestamp> <padding>" or just "<timestamp>")
+        // Timestamp is always 13 bytes for milliseconds (Date.now())
+        const timestampSize = 13;
+        let timestampStr = message;
+        if (message.length > timestampSize) {
+          // Extract just the timestamp part (first 13 characters)
+          timestampStr = message.substring(0, timestampSize);
+        }
+        const timestamp = Number(timestampStr);
         const rtt = now - timestamp;
         if (rtt >= 0) {
           // Add to accumulator for per-tick average calculation
