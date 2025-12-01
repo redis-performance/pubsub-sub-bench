@@ -31,11 +31,13 @@ async function subscriberRoutine(
           }
           totalSubscribedRef.value -= channels.slice(1).length;
         }
-        // Duplicate connection afresh.
-        pubsub = client.duplicate();
-      } else {
-        pubsub = client.duplicate();
+        // Close existing connection before creating new one
+        await pubsub.quit();
       }
+
+      // Duplicate connection afresh.
+      // For cluster clients, duplicate() creates a new cluster-aware client
+      pubsub = client.duplicate();
 
       // Set up error logging.
       pubsub.on('error', (err) => {
