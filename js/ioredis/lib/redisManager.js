@@ -86,19 +86,48 @@ async function runBenchmark(argv) {
     const nodes = cluster.nodes('master');
     console.log(`Cluster mode - discovered ${nodes.length} master nodes`);
 
-    // For cluster mode, use the cluster client itself for all slots
-    // The cluster client will automatically route commands to the correct node
-    // and handle MOVED/ASK redirects
-    for (let slot = 0; slot <= 16383; slot++) {
-      slotClientMap.set(slot, cluster);
+    // Get the cluster slots mapping to determine which node serves which slots
+    const slotsMapping = await cluster.cluster('SLOTS');
+
+    console.log(`Cluster SLOTS mapping:`, JSON.stringify(slotsMapping, null, 2));
+
+    // Build a map from slot ranges to the actual node Redis clients
+    // The nodes returned by cluster.nodes() are the actual connected Redis instances
+    for (const slotRange of slotsMapping) {
+      const startSlot = slotRange[0];
+      const endSlot = slotRange[1];
+      const masterInfo = slotRange[2]; // [host, port, nodeId]
+      const host = masterInfo[0];
+      const port = masterInfo[1];
+
+      // Find the matching node client by port
+      let nodeClient = null;
+      for (const node of nodes) {
+        if (node.options.port === port) {
+          nodeClient = node;
+          console.log(`Mapped slots ${startSlot}-${endSlot} to node ${node.options.host}:${node.options.port}`);
+          break;
+        }
+      }
+
+      if (!nodeClient) {
+        console.warn(`Warning: No node found for ${host}:${port}, using first node`);
+        nodeClient = nodes[0];
+      }
+
+      // Map all slots in this range to the node client
+      for (let slot = startSlot; slot <= endSlot; slot++) {
+        slotClientMap.set(slot, nodeClient);
+      }
     }
 
-    clients.push(cluster);
+    // Add all node clients to the clients array
+    clients.push(...nodes);
     nodeAddresses = nodes.map(node => `${node.options.host}:${node.options.port}`);
 
-    console.log(`Cluster mode - using cluster client with ${nodes.length} master nodes`);
+    console.log(`Cluster mode - using ${nodes.length} node clients from cluster`);
     console.log(`Cluster mode - node addresses: ${nodeAddresses.join(', ')}`);
-    console.log(`Cluster mode - mapped all slots to cluster client (auto-routing enabled)`);
+    console.log(`Cluster mode - mapped ${slotClientMap.size} slots to node clients`);
   } else {
     const client = new Redis(redisOptions);
     clients.push(client);

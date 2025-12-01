@@ -33,8 +33,21 @@ async function publisherRoutine(
     paddingPayload = 'A'.repeat(dataSize);
   }
 
-  // For cluster node clients, don't duplicate to preserve cluster routing
+  // For cluster mode, use the client directly without duplication
+  // The cluster client handles routing and can be shared across publishers
   const duplicatedClient = skipDuplicate ? client : client.duplicate();
+
+  // Wait for client to be ready
+  if (!skipDuplicate) {
+    await new Promise((resolve, reject) => {
+      if (duplicatedClient.status === 'ready') {
+        resolve();
+      } else {
+        duplicatedClient.once('ready', resolve);
+        duplicatedClient.once('error', reject);
+      }
+    });
+  }
 
   try {
     if (measureRTT) {
