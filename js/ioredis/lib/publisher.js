@@ -76,9 +76,9 @@ async function publisherRoutine(
             }
 
             if (mode === 'spublish') {
-              await duplicatedClient.spublish(channel, payload);
+              await duplicatedClient.spublish(channel, paddingPayload);
             } else {
-              await duplicatedClient.publish(channel, payload);
+              await duplicatedClient.publish(channel, paddingPayload);
             }
             totalMessagesRef.value++;
           } catch (err) {
