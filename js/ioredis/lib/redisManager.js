@@ -85,8 +85,16 @@ async function runBenchmark(argv) {
     // Get the cluster slots mapping to determine which node serves which slots
     const slotsMapping = await cluster.cluster('SLOTS');
 
+    // Build a map from "host:port" to the actual node client
+    const nodeMap = new Map();
+    for (const node of nodes) {
+      const key = `${node.options.host}:${node.options.port}`;
+      nodeMap.set(key, node);
+      clients.push(node);
+    }
+
     // slotsMapping format: [[startSlot, endSlot, [host, port, nodeId], ...], ...]
-    // For each slot range, create a direct connection to the master node
+    // For each slot range, map slots to the corresponding node client
     for (const slotRange of slotsMapping) {
       const startSlot = slotRange[0];
       const endSlot = slotRange[1];
@@ -94,14 +102,26 @@ async function runBenchmark(argv) {
       const host = masterInfo[0];
       const port = masterInfo[1];
 
-      // Create a standalone Redis client for this node
-      const nodeClient = new Redis({
-        ...redisOptions,
-        host,
-        port
-      });
+      // Find the node client for this host:port
+      const nodeKey = `${host}:${port}`;
+      let nodeClient = nodeMap.get(nodeKey);
 
-      clients.push(nodeClient);
+      if (!nodeClient) {
+        // If not found by exact match, try to find by port only
+        // (useful when cluster returns internal IPs but we connect via external IP)
+        for (const [key, client] of nodeMap.entries()) {
+          if (key.endsWith(`:${port}`)) {
+            nodeClient = client;
+            console.log(`Matched node ${nodeKey} to ${key} by port`);
+            break;
+          }
+        }
+      }
+
+      if (!nodeClient) {
+        console.warn(`Warning: No node client found for ${nodeKey}, using first available node`);
+        nodeClient = nodes[0];
+      }
 
       // Map all slots in this range to this node's client
       for (let slot = startSlot; slot <= endSlot; slot++) {
@@ -112,7 +132,7 @@ async function runBenchmark(argv) {
     nodeAddresses = nodes.map(node => `${node.options.host}:${node.options.port}`);
 
     console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes: ${nodeAddresses.join(', ')}`);
-    console.log(`Cluster mode - mapped ${slotClientMap.size} slots to individual node clients`);
+    console.log(`Cluster mode - mapped ${slotClientMap.size} slots to node clients`);
   } else {
     const client = new Redis(redisOptions);
     clients.push(client);
@@ -164,7 +184,17 @@ async function runBenchmark(argv) {
       const publisherName = `publisher#${clientId}`;
       let client;
 
-      client = clients[0]
+      // For sharded pub/sub in cluster mode, get the client for the first channel's slot
+      if (argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers']) {
+        const slot = clusterKeySlot(channels[0]);
+        client = slotClientMap.get(slot);
+        if (!client) {
+          console.error(`No client found for slot ${slot} (channel: ${channels[0]})`);
+          client = clients[0]; // Fallback
+        }
+      } else {
+        client = clients[0];
+      }
 
       if (argv.verbose) {
         console.log(`Publisher ${clientId} targeting channels ${channels}`);
