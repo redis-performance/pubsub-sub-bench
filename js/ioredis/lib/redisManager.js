@@ -73,11 +73,26 @@ async function runBenchmark(argv) {
       }
     );
 
+    // Wait for cluster to be ready and discover all nodes
+    await new Promise((resolve) => {
+      cluster.on('ready', resolve);
+    });
 
+    // Get all master nodes from the cluster
+    const nodes = cluster.nodes('master');
+    console.log(`Cluster mode - discovered ${nodes.length} master nodes`);
+
+    // Populate slotClientMap by using the cluster client for all slots
+    // The cluster client will automatically route commands to the correct node
+    // based on the key's hash slot, handling MOVED/ASK redirects automatically
+    for (let slot = 0; slot <= 16383; slot++) {
+      slotClientMap.set(slot, cluster);
+    }
 
     clients.push(cluster);
-    
-    console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes`);
+    nodeAddresses = nodes.map(node => `${node.options.host}:${node.options.port}`);
+
+    console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes: ${nodeAddresses.join(', ')}`);
   } else {
     const client = new Redis(redisOptions);
     clients.push(client);
