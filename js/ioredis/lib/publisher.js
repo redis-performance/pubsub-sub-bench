@@ -8,7 +8,8 @@ async function publisherRoutine(
   client,
   isRunningRef,
   totalMessagesRef,
-  rateLimiter
+  rateLimiter,
+  skipDuplicate = false
 ) {
   if (verbose) {
     console.log(
@@ -32,7 +33,8 @@ async function publisherRoutine(
     paddingPayload = 'A'.repeat(dataSize);
   }
 
-  const duplicatedClient = client.duplicate(); // Create a duplicated connection for this publisher
+  // For cluster node clients, don't duplicate to preserve cluster routing
+  const duplicatedClient = skipDuplicate ? client : client.duplicate();
 
   try {
     if (measureRTT) {

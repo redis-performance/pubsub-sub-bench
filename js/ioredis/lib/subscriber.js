@@ -13,7 +13,8 @@ async function subscriberRoutine(
   totalSubscribedRef,
   totalConnectsRef,
   verbose,
-  totalClients
+  totalClients,
+  skipDuplicate = false
 ) {
   let pubsub = null;
   let reconnectTimer = null;
@@ -35,9 +36,9 @@ async function subscriberRoutine(
         await pubsub.quit();
       }
 
-      // Duplicate connection afresh.
+      // For cluster node clients, don't duplicate to preserve cluster routing
       // For cluster clients, duplicate() creates a new cluster-aware client
-      pubsub = client.duplicate();
+      pubsub = skipDuplicate ? client : client.duplicate();
 
       // Set up error logging.
       pubsub.on('error', (err) => {

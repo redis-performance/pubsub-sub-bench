@@ -85,53 +85,41 @@ async function runBenchmark(argv) {
     // Get the cluster slots mapping to determine which node serves which slots
     const slotsMapping = await cluster.cluster('SLOTS');
 
-    // Build a map from "host:port" to the actual node client
-    const nodeMap = new Map();
-    for (const node of nodes) {
-      const key = `${node.options.host}:${node.options.port}`;
-      nodeMap.set(key, node);
-      clients.push(node);
-    }
-
     // slotsMapping format: [[startSlot, endSlot, [host, port, nodeId], ...], ...]
-    // For each slot range, map slots to the corresponding node client
+    // For each slot range, create a direct standalone connection to the master node
+    const nodeClientsMap = new Map(); // Map from "host:port" to standalone client
+
     for (const slotRange of slotsMapping) {
       const startSlot = slotRange[0];
       const endSlot = slotRange[1];
       const masterInfo = slotRange[2]; // [host, port, nodeId]
-      const host = masterInfo[0];
+      const host = masterInfo[0]; // Use internal IP from CLUSTER SLOTS
       const port = masterInfo[1];
 
-      // Find the node client for this host:port
+      // Create or reuse a standalone client for this node using internal IP
       const nodeKey = `${host}:${port}`;
-      let nodeClient = nodeMap.get(nodeKey);
-
+      let nodeClient = nodeClientsMap.get(nodeKey);
       if (!nodeClient) {
-        // If not found by exact match, try to find by port only
-        // (useful when cluster returns internal IPs but we connect via external IP)
-        for (const [key, client] of nodeMap.entries()) {
-          if (key.endsWith(`:${port}`)) {
-            nodeClient = client;
-            console.log(`Matched node ${nodeKey} to ${key} by port`);
-            break;
-          }
-        }
+        console.log(`Creating standalone client for node ${host}:${port} (slots ${startSlot}-${endSlot})`);
+        nodeClient = new Redis({
+          ...redisOptions,
+          host,
+          port
+        });
+        nodeClientsMap.set(nodeKey, nodeClient);
+        clients.push(nodeClient);
       }
 
-      if (!nodeClient) {
-        console.warn(`Warning: No node client found for ${nodeKey}, using first available node`);
-        nodeClient = nodes[0];
-      }
-
-      // Map all slots in this range to this node's client
+      // Map all slots in this range to this node's standalone client
       for (let slot = startSlot; slot <= endSlot; slot++) {
         slotClientMap.set(slot, nodeClient);
       }
     }
 
-    nodeAddresses = nodes.map(node => `${node.options.host}:${node.options.port}`);
+    nodeAddresses = Array.from(nodeClientsMap.keys());
 
-    console.log(`Cluster mode - using ${nodeAddresses.length} unique nodes: ${nodeAddresses.join(', ')}`);
+    console.log(`Cluster mode - created ${nodeClientsMap.size} standalone node clients`);
+    console.log(`Cluster mode - node addresses: ${nodeAddresses.join(', ')}`);
     console.log(`Cluster mode - mapped ${slotClientMap.size} slots to node clients`);
   } else {
     const client = new Redis(redisOptions);
@@ -200,6 +188,8 @@ async function runBenchmark(argv) {
         console.log(`Publisher ${clientId} targeting channels ${channels}`);
       }
 
+      const skipDuplicate = argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers'];
+
       promises.push(
         publisherRoutine(
           publisherName,
@@ -210,7 +200,9 @@ async function runBenchmark(argv) {
           argv['data-size'],
           client,
           isRunningRef,
-          totalMessagesRef
+          totalMessagesRef,
+          null, // rateLimiter
+          skipDuplicate
         )
       );
       
@@ -245,6 +237,8 @@ async function runBenchmark(argv) {
           console.log(`Reconnect interval for ${subscriberName}: ${reconnectInterval}ms`);
         }
 
+        const skipDuplicate = argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers'];
+
         promises.push(
           subscriberRoutine(
             subscriberName,
@@ -261,7 +255,8 @@ async function runBenchmark(argv) {
             totalSubscribedRef,
             totalConnectsRef,
             argv.verbose,
-            argv.clients
+            argv.clients,
+            skipDuplicate
           )
         );
       }
