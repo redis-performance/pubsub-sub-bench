@@ -56,73 +56,71 @@ async function runBenchmark(argv) {
   console.log(`Using ${argv['redis-timeout']} redis-timeout`);
 
   if (argv['oss-cluster-api-distribute-subscribers']) {
-    cluster = new Redis.Cluster(
-      [
-        {
-          host: argv.host,
-          port: argv.port
-        }
-      ],
-      {
-        redisOptions,
-        scaleReads: 'master',
-        enableReadyCheck: true,
-        lazyConnect: false,
-        connectTimeout: argv['redis-timeout'],
-        slotsRefreshInterval: argv['slot-refresh-interval'],
-        enableOfflineQueue: true,
-        retryDelayOnClusterDown: 300,
-        retryDelayOnFailover: 100,
-        maxRedirections: 16,
-        maxRetriesPerRequest: null
-      }
-    );
+    // Create N independent cluster clients for publishers
+    const numClusterClients = argv.clients;
 
-    // Wait for cluster to be ready and discover all nodes
-    await new Promise((resolve) => {
-      cluster.on('ready', resolve);
-    });
+    console.log(`\nCluster mode - creating ${numClusterClients} cluster clients...`);
 
-    // Get all master nodes from the cluster
-    const nodes = cluster.nodes('master');
-    console.log(`Cluster mode - discovered ${nodes.length} master nodes`);
+    const clusterOptions = {
+      redisOptions,
+      scaleReads: 'master',
+      enableReadyCheck: true,
+      lazyConnect: false,
+      connectTimeout: argv['redis-timeout'],
+      slotsRefreshInterval: argv['slot-refresh-interval'],
+      enableOfflineQueue: true,
+      retryDelayOnClusterDown: 300,
+      retryDelayOnFailover: 100,
+      maxRedirections: 16,
+      maxRetriesPerRequest: null
+    };
 
-    // Get the cluster slots mapping to determine which node serves which slots
-    const slotsMapping = await cluster.cluster('SLOTS');
+    // Create N cluster clients
+    for (let i = 0; i < numClusterClients; i++) {
+      const clusterClient = new Redis.Cluster(
+        [{ host: argv.host, port: argv.port }],
+        clusterOptions
+      );
 
-    console.log(`\nCluster SLOTS mapping:`);
-    for (const slotRange of slotsMapping) {
-      console.log(`  Slots ${slotRange[0]}-${slotRange[1]}: ${slotRange[2][0]}:${slotRange[2][1]}`);
-    }
-    console.log('');
+      clusterClient.setMaxListeners(0); // Unlimited listeners
+      clients.push(clusterClient);
 
-    // Use the cluster's internal slot mapping to get the node for each slot
-    // cluster.slots[slot] contains an array of node keys (e.g., ["127.0.0.1:6379"])
-    // cluster.connectionPool.getInstanceByKey(key) returns the Redis instance for that node
-    console.log('Mapping slots to cluster nodes...');
-    for (let slot = 0; slot <= 16383; slot++) {
-      const nodeKeys = cluster.slots[slot];
-      if (nodeKeys && nodeKeys.length > 0) {
-        // Get the master node (first in the array)
-        const masterKey = nodeKeys[0];
-        const nodeClient = cluster.connectionPool.getInstanceByKey(masterKey);
-        if (nodeClient) {
-          slotClientMap.set(slot, nodeClient);
+      // Wait for cluster client to be ready
+      await new Promise((resolve, reject) => {
+        clusterClient.on('ready', resolve);
+        clusterClient.on('error', reject);
+      });
 
-          // Track unique nodes
-          if (!nodeAddresses.includes(masterKey)) {
-            nodeAddresses.push(masterKey);
-            clients.push(nodeClient);
-            // Increase max listeners since multiple publishers/subscribers will share this client
-            nodeClient.setMaxListeners(0); // 0 = unlimited
+      // Use the first cluster client to discover topology
+      if (i === 0) {
+        cluster = clusterClient;
+        const slotsMapping = await clusterClient.cluster('SLOTS');
+
+        console.log(`Cluster mode - discovered ${slotsMapping.length} master nodes\n`);
+        console.log(`Cluster SLOTS mapping:`);
+
+        for (const slotRange of slotsMapping) {
+          const startSlot = slotRange[0];
+          const endSlot = slotRange[1];
+          const host = slotRange[2][0];
+          const port = slotRange[2][1];
+          const nodeAddr = `${host}:${port}`;
+
+          console.log(`  Slots ${startSlot}-${endSlot}: ${nodeAddr}`);
+
+          if (!nodeAddresses.includes(nodeAddr)) {
+            nodeAddresses.push(nodeAddr);
           }
         }
+        console.log('');
+      }
+
+      if ((i + 1) % 10 === 0 || i === numClusterClients - 1) {
+        console.log(`  Created ${i + 1}/${numClusterClients} cluster clients...`);
       }
     }
 
-    console.log(`\nCluster mode - using ${clients.length} cluster node connections`);
-    console.log(`Cluster mode - node addresses: ${nodeAddresses.join(', ')}`);
-    console.log(`Cluster mode - mapped ${slotClientMap.size} slots to node clients`);
+    console.log(`\nCluster mode - created ${clients.length} cluster clients`);
   } else {
     const client = new Redis(redisOptions);
     clients.push(client);
@@ -172,27 +170,18 @@ async function runBenchmark(argv) {
       }
 
       const publisherName = `publisher#${clientId}`;
-      let client;
 
-      // For sharded pub/sub in cluster mode, get the client for the first channel's slot
-      if (argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers']) {
-        const slot = clusterKeySlot(channels[0]);
-        client = slotClientMap.get(slot);
-        if (!client) {
-          console.error(`No client found for slot ${slot} (channel: ${channels[0]})`);
-          client = clients[0]; // Fallback
-        } else if (argv.verbose) {
-          console.log(`Publisher ${clientId}: channel=${channels[0]}, slot=${slot}, node=${client.options.host}:${client.options.port}`);
-        }
-      } else {
-        client = clients[0];
-      }
+      // Round-robin through the cluster clients
+      const client = clients[(clientId - 1) % clients.length];
 
       if (argv.verbose) {
-        console.log(`Publisher ${clientId} targeting channels ${channels}`);
+        const slot = argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers']
+          ? clusterKeySlot(channels[0])
+          : 'N/A';
+        console.log(`Publisher ${clientId}: channel=${channels[0]}, slot=${slot}, client=${(clientId - 1) % clients.length}/${clients.length}`);
       }
 
-      const skipDuplicate = argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers'];
+      const skipDuplicate = true; // Don't duplicate cluster clients
 
       promises.push(
         publisherRoutine(
@@ -229,8 +218,55 @@ async function runBenchmark(argv) {
         }
 
         const subscriberName = `subscriber#${clientId}`;
-        const slot = clusterKeySlot(channels[0]);
-        const client = slotClientMap.get(slot);
+        let client;
+
+        // For sharded pub/sub in cluster mode, we need standalone clients for subscribers
+        // because ioredis Cluster clients don't support SSUBSCRIBE properly
+        if (argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers']) {
+          const slot = clusterKeySlot(channels[0]);
+
+          // Get node info from the first cluster client
+          const nodeKeys = cluster.slots[slot];
+          if (!nodeKeys || nodeKeys.length === 0) {
+            console.error(`No node found for slot ${slot} (channel: ${channels[0]})`);
+            process.exit(1);
+          }
+
+          const masterKey = nodeKeys[0];
+          const [host, port] = masterKey.split(':');
+
+          // Create a standalone Redis client connected directly to the node
+          client = new Redis({
+            host,
+            port: parseInt(port),
+            username: argv.user || undefined,
+            password: argv.a || undefined,
+            connectTimeout: argv['redis-timeout'],
+            commandTimeout: argv['redis-timeout'],
+            maxRetriesPerRequest: 1,
+            enableReadyCheck: true,
+            lazyConnect: false
+          });
+
+          client.setMaxListeners(0);
+
+          // Wait for client to be ready
+          await new Promise((resolve, reject) => {
+            if (client.status === 'ready') {
+              resolve();
+            } else {
+              client.once('ready', resolve);
+              client.once('error', reject);
+            }
+          });
+
+          if (argv.verbose) {
+            console.log(`Subscriber ${clientId}: channel=${channels[0]}, slot=${slot}, node=${host}:${port}`);
+          }
+        } else {
+          // Standalone mode - use first client
+          client = clients[0];
+        }
 
         const reconnectInterval = randomInt(
           argv['min-reconnect-interval'],
@@ -241,7 +277,7 @@ async function runBenchmark(argv) {
           console.log(`Reconnect interval for ${subscriberName}: ${reconnectInterval}ms`);
         }
 
-        const skipDuplicate = argv.mode.startsWith('s') && argv['oss-cluster-api-distribute-subscribers'];
+        const skipDuplicate = true; // Don't duplicate - we already created a dedicated client
 
         promises.push(
           subscriberRoutine(
