@@ -77,6 +77,7 @@ async function publisherRoutine(
             totalMessagesRef.value++;
           } catch (err) {
             console.error(`Error publishing to channel ${channel}:`, err);
+            process.exit(1);
           }
         }
       }
@@ -98,6 +99,7 @@ async function publisherRoutine(
             totalMessagesRef.value++;
           } catch (err) {
             console.error(`Error publishing to channel ${channel}:`, err);
+            process.exit(1);
           }
         }
       }

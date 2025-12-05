@@ -73,7 +73,8 @@ async function runBenchmark(argv) {
         enableOfflineQueue: true,
         retryDelayOnClusterDown: 300,
         retryDelayOnFailover: 100,
-        maxRedirections: 16
+        maxRedirections: 16,
+        maxRetriesPerRequest: null
       }
     );
 
@@ -89,43 +90,37 @@ async function runBenchmark(argv) {
     // Get the cluster slots mapping to determine which node serves which slots
     const slotsMapping = await cluster.cluster('SLOTS');
 
-    console.log(`Cluster SLOTS mapping:`, JSON.stringify(slotsMapping, null, 2));
-
-    // Build a map from slot ranges to the actual node Redis clients
-    // The nodes returned by cluster.nodes() are the actual connected Redis instances
+    console.log(`\nCluster SLOTS mapping:`);
     for (const slotRange of slotsMapping) {
-      const startSlot = slotRange[0];
-      const endSlot = slotRange[1];
-      const masterInfo = slotRange[2]; // [host, port, nodeId]
-      const host = masterInfo[0];
-      const port = masterInfo[1];
+      console.log(`  Slots ${slotRange[0]}-${slotRange[1]}: ${slotRange[2][0]}:${slotRange[2][1]}`);
+    }
+    console.log('');
 
-      // Find the matching node client by port
-      let nodeClient = null;
-      for (const node of nodes) {
-        if (node.options.port === port) {
-          nodeClient = node;
-          console.log(`Mapped slots ${startSlot}-${endSlot} to node ${node.options.host}:${node.options.port}`);
-          break;
+    // Use the cluster's internal slot mapping to get the node for each slot
+    // cluster.slots[slot] contains an array of node keys (e.g., ["127.0.0.1:6379"])
+    // cluster.connectionPool.getInstanceByKey(key) returns the Redis instance for that node
+    console.log('Mapping slots to cluster nodes...');
+    for (let slot = 0; slot <= 16383; slot++) {
+      const nodeKeys = cluster.slots[slot];
+      if (nodeKeys && nodeKeys.length > 0) {
+        // Get the master node (first in the array)
+        const masterKey = nodeKeys[0];
+        const nodeClient = cluster.connectionPool.getInstanceByKey(masterKey);
+        if (nodeClient) {
+          slotClientMap.set(slot, nodeClient);
+
+          // Track unique nodes
+          if (!nodeAddresses.includes(masterKey)) {
+            nodeAddresses.push(masterKey);
+            clients.push(nodeClient);
+            // Increase max listeners since multiple publishers/subscribers will share this client
+            nodeClient.setMaxListeners(0); // 0 = unlimited
+          }
         }
-      }
-
-      if (!nodeClient) {
-        console.warn(`Warning: No node found for ${host}:${port}, using first node`);
-        nodeClient = nodes[0];
-      }
-
-      // Map all slots in this range to the node client
-      for (let slot = startSlot; slot <= endSlot; slot++) {
-        slotClientMap.set(slot, nodeClient);
       }
     }
 
-    // Add all node clients to the clients array
-    clients.push(...nodes);
-    nodeAddresses = nodes.map(node => `${node.options.host}:${node.options.port}`);
-
-    console.log(`Cluster mode - using ${nodes.length} node clients from cluster`);
+    console.log(`\nCluster mode - using ${clients.length} cluster node connections`);
     console.log(`Cluster mode - node addresses: ${nodeAddresses.join(', ')}`);
     console.log(`Cluster mode - mapped ${slotClientMap.size} slots to node clients`);
   } else {
@@ -186,6 +181,8 @@ async function runBenchmark(argv) {
         if (!client) {
           console.error(`No client found for slot ${slot} (channel: ${channels[0]})`);
           client = clients[0]; // Fallback
+        } else if (argv.verbose) {
+          console.log(`Publisher ${clientId}: channel=${channels[0]}, slot=${slot}, node=${client.options.host}:${client.options.port}`);
         }
       } else {
         client = clients[0];
