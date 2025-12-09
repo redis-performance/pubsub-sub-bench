@@ -4,6 +4,7 @@ const { publisherRoutine } = require('./publisher');
 const { subscriberRoutine } = require('./subscriber');
 const { updateCLI, writeFinalResults, createRttHistogram, RttAccumulator } = require('./metrics');
 const seedrandom = require('seedrandom');
+const { RateLimiter } = require('limiter');
 
 async function runBenchmark(argv) {
   console.log(`pubsub-sub-bench (JavaScript version)`);
@@ -158,7 +159,13 @@ async function runBenchmark(argv) {
     // Run publishers
     totalPublishersRef.value = argv.clients;
     console.log(`Starting ${argv.clients} publishers in ${argv.mode} mode`);
-    
+
+    // Log rate limiting if RPS is specified
+    if (argv.rps > 0) {
+      const rpsPerPublisher = argv.rps / argv.clients;
+      console.log(`Rate limiting enabled: Target ${argv.rps} RPS total (${rpsPerPublisher.toFixed(2)} RPS per publisher)`);
+    }
+
     for (let clientId = 1; clientId <= argv.clients; clientId++) {
       const channels = [];
       const numChannels = pickChannelCount(argv);
@@ -183,6 +190,18 @@ async function runBenchmark(argv) {
 
       const skipDuplicate = true; // Don't duplicate cluster clients
 
+      // Create a rate limiter for this publisher if RPS is specified
+      let publisherRateLimiter = null;
+      if (argv.rps > 0) {
+        const rpsPerPublisher = argv.rps / argv.clients;
+        // RateLimiter takes tokensPerInterval and interval
+        // For RPS, we want rpsPerPublisher tokens per second (1000ms)
+        publisherRateLimiter = new RateLimiter({
+          tokensPerInterval: rpsPerPublisher,
+          interval: 'second'
+        });
+      }
+
       promises.push(
         publisherRoutine(
           publisherName,
@@ -194,13 +213,13 @@ async function runBenchmark(argv) {
           client,
           isRunningRef,
           totalMessagesRef,
-          null, // rateLimiter
+          publisherRateLimiter,
           skipDuplicate
         )
       );
-      
+
       totalConnectsRef.value++;
-      
+
       if (clientId % 100 === 0) {
         console.log(`Created ${clientId} publishers so far.`);
       }

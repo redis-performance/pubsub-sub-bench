@@ -36,6 +36,7 @@ function parseArgs() {
     .option('measure-rtt-latency', { type: 'boolean', default: false })
     .option('redis-timeout', { default: 120000 })
     .option('pool-size', { default: 0 })
+    .option('rps', { description: 'Target requests per second (RPS) for publishers', default: 0 })
     .help().argv;
 }
 
