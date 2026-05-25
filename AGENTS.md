@@ -4,17 +4,24 @@ Instructions for AI coding agents (Claude Code, Copilot, Cursor, etc.) working i
 
 ## Project overview
 
-<!-- TODO: one paragraph describing what this repo does -->
+`pubsub-sub-bench` is a Go benchmarking tool that mimics the subscriber workload in a Redis Pub/Sub system. It connects multiple subscriber clients to Redis, subscribes them to configurable channel ranges, and measures throughput and (optionally) round-trip latency. It supports standard Pub/Sub (`SUBSCRIBE`/`PUBLISH`), sharded Pub/Sub (`SSUBSCRIBE`/`SPUBLISH`), Redis OSS Cluster topology, and a built-in publisher mode with rate limiting — making it a self-contained load generator for validating Redis Pub/Sub performance.
 
 ## Local setup
 
-<!-- TODO: mirror the setup steps from CONTRIBUTING.md -->
+This is a Go project. You need Go 1.23 or later (Go 1.24 recommended).
 
 ```bash
-# Example
-git clone git@github.com:redis-performance/<repo>.git
-cd <repo>
+git clone git@github.com:redis-performance/pubsub-sub-bench.git
+cd pubsub-sub-bench
+
+# Download all dependencies
+go mod download
+
+# Build the binary
+make build
 ```
+
+The resulting binary is `./pubsub-sub-bench` in the repo root.
 
 ## Branch naming
 
@@ -29,11 +36,16 @@ Same as human contributors: `<type>/<short-description>` (e.g. `fix/off-by-one-i
 
 ## Running tests
 
-<!-- TODO: exact command to run tests -->
+Run the full test suite (downloads dependencies, checks formatting, runs tests with the race detector):
 
 ```bash
-# Example
 make test
+```
+
+To also generate a coverage report:
+
+```bash
+make coverage
 ```
 
 Always run tests before declaring a task complete.
@@ -42,8 +54,8 @@ Always run tests before declaring a task complete.
 
 1. Create a branch: `git checkout -b <type>/<description>`.
 2. Commit with a clear message focused on *why*, not *what*.
-3. Open a pull request against `main`.
-4. Do **not** push directly to `main`.
+3. Open a pull request against `master`.
+4. Do **not** push directly to `master`.
 
 ## What to avoid
 
