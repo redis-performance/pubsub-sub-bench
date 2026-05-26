@@ -13,7 +13,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: filipe958/pubsub-sub-bench
+  IMAGE_NAME: redis/pubsub-sub-bench
 
 jobs:
   docker-publish:
@@ -26,7 +26,10 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # Fetch full history for Git info
+        fetch-depth: 0
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -34,11 +37,10 @@ jobs:
     - name: Check Docker Hub credentials
       run: |
         if [[ -z "${{ secrets.DOCKER_USERNAME }}" || -z "${{ secrets.DOCKER_PASSWORD }}" ]]; then
-          echo "❌ Docker Hub credentials not configured!"
+          echo "Docker Hub credentials not configured!"
           echo "Please set DOCKER_USERNAME and DOCKER_PASSWORD secrets in repository settings."
           exit 1
         fi
-        echo "✅ Docker Hub credentials are configured"
 
     - name: Log in to Docker Hub
       uses: docker/login-action@v3
@@ -83,18 +85,7 @@ jobs:
     - name: Generate summary
       run: |
         echo "## 🐳 Docker Image Published" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
         echo "**Repository:** \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "${{ steps.docker_meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Tags:** ${{ steps.docker_meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
         echo "**Git SHA:** \`${{ steps.meta.outputs.git_sha }}\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "**Usage:**" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-        echo "docker run --rm ${{ env.IMAGE_NAME }}:latest --help" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "🔗 [View on Docker Hub](https://hub.docker.com/r/filipe958/pubsub-sub-bench)" >> $GITHUB_STEP_SUMMARY
+        echo "🔗 [View on Docker Hub](https://hub.docker.com/r/${{ env.IMAGE_NAME }})" >> $GITHUB_STEP_SUMMARY
