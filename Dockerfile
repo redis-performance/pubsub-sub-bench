@@ -72,3 +72,4 @@ ENTRYPOINT ["/app/pubsub-sub-bench"]
 
 # Default command (show help)
 CMD ["--help"]
+
