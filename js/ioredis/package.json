@@ -6,7 +6,8 @@
     "dependencies": {
         "cluster-key-slot": "^1.1.0",
         "hdr-histogram-js": "^2.0.1",
-        "ioredis": "^4.30.0",
+        "ioredis": "4.30.2-v4-beta.1",
+        "limiter": "^3.0.0",
         "seedrandom": "^3.0.5",
         "yargs": "^17.7.2"
     },
@@ -21,4 +22,4 @@
     "lint-staged": {
         "js/**/*.js": "prettier --write"
     }
-}   
+}

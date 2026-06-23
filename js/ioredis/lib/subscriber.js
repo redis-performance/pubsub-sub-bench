@@ -13,7 +13,8 @@ async function subscriberRoutine(
   totalSubscribedRef,
   totalConnectsRef,
   verbose,
-  totalClients
+  totalClients,
+  skipDuplicate = false
 ) {
   let pubsub = null;
   let reconnectTimer = null;
@@ -31,11 +32,13 @@ async function subscriberRoutine(
           }
           totalSubscribedRef.value -= channels.slice(1).length;
         }
-        // Duplicate connection afresh.
-        pubsub = client.duplicate();
-      } else {
-        pubsub = client.duplicate();
+        // Close existing connection before creating new one
+        await pubsub.quit();
       }
+
+      // For cluster node clients, don't duplicate to preserve cluster routing
+      // For cluster clients, duplicate() creates a new cluster-aware client
+      pubsub = skipDuplicate ? client : client.duplicate();
 
       // Set up error logging.
       pubsub.on('error', (err) => {
@@ -67,7 +70,15 @@ async function subscriberRoutine(
     if (measureRTT) {
       try {
         const now = Date.now();
-        const timestamp = Number(message); // Timestamp from publisher
+        // Extract timestamp from payload (format: "<timestamp> <padding>" or just "<timestamp>")
+        // Timestamp is always 13 bytes for milliseconds (Date.now())
+        const timestampSize = 13;
+        let timestampStr = message;
+        if (message.length > timestampSize) {
+          // Extract just the timestamp part (first 13 characters)
+          timestampStr = message.substring(0, timestampSize);
+        }
+        const timestamp = Number(timestampStr);
         const rtt = now - timestamp;
         if (rtt >= 0) {
           // Add to accumulator for per-tick average calculation

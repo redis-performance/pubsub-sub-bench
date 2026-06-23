@@ -33,6 +33,11 @@ build-race:
 	$(GOBUILDRACE) \
         -ldflags=$(LDFLAGS) .
 
+build-cover:
+	@echo "Building binary with coverage instrumentation..."
+	$(GOBUILD) -cover \
+        -ldflags=$(LDFLAGS) .
+
 checkfmt:
 	@echo 'Checking gofmt';\
  	bash -c "diff -u <(echo -n) <(go fmt .)";\
@@ -52,9 +57,21 @@ fmt:
 get:
 	$(GOGET) -t -v ./...
 
-test: get
+test: get build-cover
 	$(GOFMT) ./...
-	$(GOTEST) -race -covermode=atomic ./...
+	@rm -rf .coverdata
+	@mkdir -p .coverdata
+	$(GOTEST) -v -race -covermode=atomic ./...
 
-coverage: get test
-	$(GOTEST) -race -coverprofile=coverage.txt -covermode=atomic .
+coverage: get build-cover
+	$(GOFMT) ./...
+	@rm -rf .coverdata
+	@mkdir -p .coverdata
+	$(GOTEST) -v -race -covermode=atomic .
+	@if [ -d .coverdata ] && [ -n "$$(ls -A .coverdata 2>/dev/null)" ]; then \
+		echo "Converting coverage data..."; \
+		go tool covdata textfmt -i=.coverdata -o coverage.txt; \
+	else \
+		echo "No coverage data found, creating empty coverage file"; \
+		touch coverage.txt; \
+	fi
