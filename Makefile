@@ -60,8 +60,15 @@ coverage: get test
 	$(GOTEST) -race -coverprofile=coverage.txt -covermode=atomic .
 
 # TLS integration test harness: spins up a real, dockerized TLS-only Redis
-# (see scripts/redis-tls-docker.sh) and runs the -tags=integration tests
-# against it, always tearing the container down afterwards.
+# and runs the -tags=integration tests against it, always tearing the
+# container down afterwards - including on Ctrl-C/job cancellation. The full
+# lifecycle is owned by scripts/run-integration-tests.sh as a single
+# signal-safe unit (see that file for why this can't just be Makefile
+# prerequisites + a trap in test-integration's own recipe).
+#
+# gen-test-tls-certs/redis-tls-up/redis-tls-down remain as standalone
+# convenience targets for local manual poking; test-integration does not
+# depend on them.
 gen-test-tls-certs:
 	./scripts/gen-test-tls-certs.sh
 
@@ -71,8 +78,5 @@ redis-tls-up: gen-test-tls-certs
 redis-tls-down:
 	./scripts/redis-tls-docker.sh stop
 
-test-integration: get redis-tls-up
-	trap '$(MAKE) redis-tls-down' EXIT; \
-	trap 'exit 130' INT; \
-	trap 'exit 143' TERM; \
-	$(GOTEST) -race -tags=integration -v ./...
+test-integration: get
+	GO111MODULE=on ./scripts/run-integration-tests.sh go test -race -tags=integration -v ./...

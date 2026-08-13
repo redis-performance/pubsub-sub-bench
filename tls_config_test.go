@@ -131,18 +131,22 @@ func TestBuildTLSConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("CA bundle with multiple concatenated certs is parsed", func(t *testing.T) {
+	t.Run("CA bundle continues past a bad block to a later valid cert", func(t *testing.T) {
+		// Plain non-PEM garbage (no BEGIN/END markers) would just get skipped
+		// as preamble by pem.Decode, trivially finding the valid block after
+		// it - not a real test of continuing past a bad *block*. Use a
+		// properly delimited block with corrupted content instead, so
+		// AppendCertsFromPEM must actually fail to x509-parse it and move on
+		// to the next block, matching how a real corrupted bundle entry
+		// (partial write, bit rot) would look.
+		malformedBlock := "-----BEGIN CERTIFICATE-----\nVEhJU0lTTk9UQVZBTElEQ0VSVElGSUNBVEU=\n-----END CERTIFICATE-----\n"
 		secondCACertPath, _, _ := generateTestCA(t, t.TempDir())
-		firstPEM, err := os.ReadFile(caCertPath)
-		if err != nil {
-			t.Fatalf("failed to read first CA cert: %v", err)
-		}
-		secondPEM, err := os.ReadFile(secondCACertPath)
+		validPEM, err := os.ReadFile(secondCACertPath)
 		if err != nil {
 			t.Fatalf("failed to read second CA cert: %v", err)
 		}
 		bundlePath := filepath.Join(dir, "ca-bundle.pem")
-		bundle := append(append([]byte{}, firstPEM...), secondPEM...)
+		bundle := append([]byte(malformedBlock), validPEM...)
 		if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
 			t.Fatalf("failed to write CA bundle: %v", err)
 		}
@@ -152,7 +156,7 @@ func TestBuildTLSConfig(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if cfg.RootCAs == nil {
-			t.Fatal("expected RootCAs to be populated from a multi-cert CA bundle")
+			t.Fatal("expected RootCAs to be populated from the valid cert past the malformed block")
 		}
 	})
 

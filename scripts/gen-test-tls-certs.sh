@@ -40,8 +40,13 @@ openssl x509 -req -sha256 -days 3650 \
 
 rm -f redis.csr client.csr ca.srl
 
-# World-readable: these are throwaway test-only certs, and the Redis container
-# runs as a different (non-root) uid than the host user that generated them.
-chmod 0644 ca.key redis.key client.key
+# Only redis.key needs to be world-readable: it's bind-mounted into the Redis
+# container, which runs as a different (non-root) uid than the host user that
+# generated it. ca.key and client.key are only ever read host-side (by openssl
+# and the Go test process, both running as the host user), so lock them down
+# explicitly rather than relying on OpenSSL's (umask-dependent, observed to be
+# 0644 on some systems) default write mode.
+chmod 0600 ca.key client.key
+chmod 0644 redis.key
 
 echo "[gen-test-tls-certs] done: ca.crt, redis.{crt,key}, client.{crt,key}"

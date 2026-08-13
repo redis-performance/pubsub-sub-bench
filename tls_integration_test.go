@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,31 @@ func waitForSubscriberReady(t *testing.T, host, port string, tlsConfig *tls.Conf
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for a subscriber on channel %q", channel)
+}
+
+// TestTLSFlagsWithoutTLSFailClosed proves the CLI refuses to run (rather than
+// silently connecting in plaintext) when TLS material flags are passed
+// without -tls - that fallback would otherwise send -a's password and every
+// payload unencrypted with nothing but a log line as a signal. The check
+// happens before any dial attempt, so no real Redis is needed here.
+func TestTLSFlagsWithoutTLSFailClosed(t *testing.T) {
+	_, _, caFile, _, _ := tlsIntegrationEnv(t)
+	binPath := buildBinaryForTest(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath,
+		"-tls_ca", caFile,
+		"-host", "127.0.0.1", "-port", "1",
+		"-mode", "subscribe", "-test-time", "1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected the binary to exit non-zero when TLS flags are set without -tls, got success. Output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "refusing to silently fall back to a plaintext connection") {
+		t.Fatalf("expected the fail-closed error message, got:\n%s", out)
+	}
 }
 
 // TestTLSBinaryEndToEnd is a black-box test of the actual CLI: it builds the
