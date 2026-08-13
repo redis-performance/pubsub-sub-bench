@@ -194,15 +194,20 @@ func waitForSubscriberReady(t *testing.T, host, port string, tlsConfig *tls.Conf
 // silently connecting in plaintext) when TLS material flags are passed
 // without -tls - that fallback would otherwise send -a's password and every
 // payload unencrypted with nothing but a log line as a signal. The check
-// happens before any dial attempt, so no real Redis is needed here.
+// happens before any dial attempt or file read (buildTLSConfig(false, ...)
+// returns immediately without touching caFile), so this deliberately does
+// NOT depend on tlsIntegrationEnv/real cert fixtures or a running Redis -
+// unlike this package's other integration tests, it must still run (not
+// skip) even when `make test-integration` hasn't generated certs yet, since
+// it's the only regression test for this security-relevant fail-closed check.
 func TestTLSFlagsWithoutTLSFailClosed(t *testing.T) {
-	_, _, caFile, _, _ := tlsIntegrationEnv(t)
 	binPath := buildBinaryForTest(t)
+	unusedCAFile := filepath.Join(t.TempDir(), "unused-ca.crt")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath,
-		"-tls_ca", caFile,
+		"-tls_ca", unusedCAFile,
 		"-host", "127.0.0.1", "-port", "1",
 		"-mode", "subscribe", "-test-time", "1",
 	)

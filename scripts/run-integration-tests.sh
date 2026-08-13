@@ -11,12 +11,18 @@
 # trap for the whole script's lifetime, so any interruption at any point still
 # cleans up.
 #
-# Every step also runs backgrounded and explicitly `wait`-ed on (not just
-# invoked as a plain foreground command) so that if a signal targets only this
-# script's own PID (some CI orchestrators do this) rather than its whole
-# process group, the still-running child is explicitly killed and reaped
-# before teardown runs - instead of being silently orphaned while its
-# container gets pulled out from under it.
+# Every step also runs under `setsid` (its own process group, not just
+# backgrounded) and is explicitly `wait`-ed on, so that if a signal targets
+# only this script's own PID (some CI orchestrators do this) rather than its
+# whole process group, cleanup can kill the WHOLE subtree it spawned - not
+# just its immediate child. This matters concretely for the go test step:
+# `go test` forks a separate compiled *.test binary, which for
+# TestTLSBinaryEndToEnd/TestTLSFlagsWithoutTLSFailClosed itself further
+# spawns subscriber/publisher pubsub-sub-bench subprocesses. Killing only the
+# `go test` PID leaves all of those reparented to init and running - `setsid`
+# gives every step its own process group (pgid == its own pid, since setsid
+# execs in place rather than forking again) so `kill -- -PID` reaches
+# everything in it in one shot.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STEP_PID=""
 
 run_tracked() {
-    "$@" &
+    setsid "$@" &
     STEP_PID=$!
     local status=0
     wait "$STEP_PID" || status=$?
@@ -34,7 +40,7 @@ run_tracked() {
 
 cleanup() {
     if [[ -n "$STEP_PID" ]] && kill -0 "$STEP_PID" 2>/dev/null; then
-        kill "$STEP_PID" 2>/dev/null || true
+        kill -- "-$STEP_PID" 2>/dev/null || true
         wait "$STEP_PID" 2>/dev/null || true
     fi
     "$SCRIPT_DIR/redis-tls-docker.sh" stop
