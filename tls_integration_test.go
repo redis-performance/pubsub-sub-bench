@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net"
 	"os"
@@ -122,6 +123,72 @@ func TestTLSConnectionRequiresClientCert(t *testing.T) {
 	}
 }
 
+// TestTLSInsecureSkipVerify proves -tls_insecure_skip_verify actually changes
+// the TLS handshake outcome, not just a struct field: configure RootCAs with a
+// CA that never signed the server's certificate (so verification must fail),
+// then show the connection is rejected with InsecureSkipVerify=false and
+// succeeds with InsecureSkipVerify=true. The client cert/key are still signed
+// by the real trusted CA (required for the server's own mTLS check of us) -
+// only our verification of the server's certificate is put under test.
+func TestTLSInsecureSkipVerify(t *testing.T) {
+	host, port, _, certFile, keyFile := tlsIntegrationEnv(t)
+
+	foreignCACertPath, _, _ := generateTestCA(t, t.TempDir())
+
+	strictConfig, err := buildTLSConfig(true, foreignCACertPath, certFile, keyFile, false)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if pingErr := pingWithConfig(t, host, port, strictConfig); pingErr == nil {
+		t.Fatal("expected PING to fail verifying the server cert against an unrelated CA, got nil error")
+	}
+
+	skipConfig, err := buildTLSConfig(true, foreignCACertPath, certFile, keyFile, true)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if pingErr := pingWithConfig(t, host, port, skipConfig); pingErr != nil {
+		t.Fatalf("expected PING to succeed with InsecureSkipVerify=true despite an unrelated CA, got error: %v", pingErr)
+	}
+}
+
+func pingWithConfig(t *testing.T, host, port string, tlsConfig *tls.Config) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := redis.NewClient(&redis.Options{
+		Addr:      net.JoinHostPort(host, port),
+		TLSConfig: tlsConfig,
+	})
+	defer client.Close()
+	return client.Ping(ctx).Err()
+}
+
+// waitForSubscriberReady polls PUBSUB NUMSUB until the given channel has at
+// least one subscriber, deterministically replacing a fixed sleep: PUBLISH is
+// fire-and-forget in Redis, so publishing before SUBSCRIBE completes silently
+// drops the message rather than queuing it.
+func waitForSubscriberReady(t *testing.T, host, port string, tlsConfig *tls.Config, channel string, timeout time.Duration) {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{
+		Addr:      net.JoinHostPort(host, port),
+		TLSConfig: tlsConfig,
+	})
+	defer client.Close()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		counts, err := client.PubSubNumSub(ctx, channel).Result()
+		cancel()
+		if err == nil && counts[channel] > 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for a subscriber on channel %q", channel)
+}
+
 // TestTLSBinaryEndToEnd is a black-box test of the actual CLI: it builds the
 // real binary and runs it as a publisher and a subscriber subprocess against
 // the dockerized TLS Redis, proving the -tls/-tls_ca/-tls_cert/-tls_key flags
@@ -153,9 +220,29 @@ func TestTLSBinaryEndToEnd(t *testing.T) {
 	if err := subCmd.Start(); err != nil {
 		t.Fatalf("failed to start subscriber subprocess: %v", err)
 	}
+	// Exactly one goroutine ever calls Wait, storing the result before closing
+	// subWaitDone; both the happy-path wait below and the safety-net Cleanup
+	// can then observe it via a receive from the (now closed) channel without
+	// racing or double-calling Wait (which os/exec forbids).
+	var subErr error
+	subWaitDone := make(chan struct{})
+	go func() {
+		subErr = subCmd.Wait()
+		close(subWaitDone)
+	}()
+	t.Cleanup(func() {
+		subCancel()
+		<-subWaitDone
+	})
 
-	// give the subscriber time to connect and subscribe before publishing starts
-	time.Sleep(1 * time.Second)
+	// deterministically wait for the subscriber to actually be subscribed
+	// before publishing - PUBLISH is fire-and-forget, so publishing any
+	// earlier would silently lose the message rather than queue it.
+	subscriberTLSConfig, err := buildTLSConfig(true, caFile, certFile, keyFile, false)
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	waitForSubscriberReady(t, host, port, subscriberTLSConfig, channelPrefix+"1", 10*time.Second)
 
 	pubCtx, pubCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer pubCancel()
@@ -175,8 +262,9 @@ func TestTLSBinaryEndToEnd(t *testing.T) {
 		t.Fatalf("publisher subprocess failed: %v\n%s", err, pubOut)
 	}
 
-	if err := subCmd.Wait(); err != nil {
-		t.Fatalf("subscriber subprocess failed: %v\n%s", err, subOut.String())
+	<-subWaitDone
+	if subErr != nil {
+		t.Fatalf("subscriber subprocess failed: %v\n%s", subErr, subOut.String())
 	}
 
 	data, err := os.ReadFile(jsonOut)

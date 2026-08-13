@@ -72,7 +72,7 @@ redis-tls-down:
 	./scripts/redis-tls-docker.sh stop
 
 test-integration: get redis-tls-up
-	$(GOTEST) -race -tags=integration -v ./...; \
-	status=$$?; \
-	$(MAKE) redis-tls-down; \
-	exit $$status
+	trap '$(MAKE) redis-tls-down' EXIT; \
+	trap 'exit 130' INT; \
+	trap 'exit 143' TERM; \
+	$(GOTEST) -race -tags=integration -v ./...

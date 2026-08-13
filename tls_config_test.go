@@ -131,6 +131,31 @@ func TestBuildTLSConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("CA bundle with multiple concatenated certs is parsed", func(t *testing.T) {
+		secondCACertPath, _, _ := generateTestCA(t, t.TempDir())
+		firstPEM, err := os.ReadFile(caCertPath)
+		if err != nil {
+			t.Fatalf("failed to read first CA cert: %v", err)
+		}
+		secondPEM, err := os.ReadFile(secondCACertPath)
+		if err != nil {
+			t.Fatalf("failed to read second CA cert: %v", err)
+		}
+		bundlePath := filepath.Join(dir, "ca-bundle.pem")
+		bundle := append(append([]byte{}, firstPEM...), secondPEM...)
+		if err := os.WriteFile(bundlePath, bundle, 0o600); err != nil {
+			t.Fatalf("failed to write CA bundle: %v", err)
+		}
+
+		cfg, err := buildTLSConfig(true, bundlePath, "", "", false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.RootCAs == nil {
+			t.Fatal("expected RootCAs to be populated from a multi-cert CA bundle")
+		}
+	})
+
 	t.Run("missing CA file path errors", func(t *testing.T) {
 		_, err := buildTLSConfig(true, filepath.Join(dir, "does-not-exist.crt"), "", "", false)
 		if err == nil {
@@ -152,6 +177,17 @@ func TestBuildTLSConfig(t *testing.T) {
 		}
 		if len(cfg.Certificates) != 1 {
 			t.Fatalf("expected 1 client certificate, got %d", len(cfg.Certificates))
+		}
+	})
+
+	t.Run("corrupted key file errors", func(t *testing.T) {
+		corruptedKeyPath := filepath.Join(dir, "corrupted.key")
+		if err := os.WriteFile(corruptedKeyPath, []byte("not a real private key"), 0o600); err != nil {
+			t.Fatalf("failed to write corrupted key file: %v", err)
+		}
+		_, err := buildTLSConfig(true, "", certPath, corruptedKeyPath, false)
+		if err == nil {
+			t.Fatal("expected error for a corrupted key file, got nil")
 		}
 	})
 

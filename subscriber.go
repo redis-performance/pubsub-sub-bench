@@ -317,6 +317,8 @@ func main() {
 	}
 	if *tlsEnabled {
 		log.Println("TLS enabled.")
+	} else if *tlsCA != "" || *tlsCert != "" || *tlsKey != "" || *tlsInsecureSkipVerify {
+		log.Println("WARNING: -tls_ca/-tls_cert/-tls_key/-tls_insecure_skip_verify were set but -tls was not; connecting without TLS.")
 	}
 
 	standaloneOptions := redis.Options{Protocol: *resp,

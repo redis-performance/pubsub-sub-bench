@@ -8,7 +8,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CERTS_DIR="$REPO_ROOT/testdata/tls/certs"
 
 CONTAINER_NAME="pubsub-bench-redis-tls"
-REDIS_IMAGE="${REDIS_IMAGE:-redis:8}"
+# Pinned by digest (redis:8, verified to include native TLS support) so the
+# integration job is reproducible and doesn't silently drift to a new 8.x
+# release. Override with REDIS_IMAGE=... to test against a different build.
+REDIS_IMAGE="${REDIS_IMAGE:-redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366}"
 TLS_PORT="${PUBSUB_BENCH_TLS_PORT:-16390}"
 
 start() {
@@ -45,6 +48,7 @@ start() {
 
     echo "[redis-tls-docker] Redis did not become ready in time" >&2
     docker logs "$CONTAINER_NAME" >&2 || true
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     exit 1
 }
 
