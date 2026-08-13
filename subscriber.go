@@ -27,6 +27,7 @@ import (
 const (
 	redisPoolSize              = "pool_size"
 	redisPoolSizeDefault       = 0
+	redisTLS                   = "tls"
 	redisTLSCA                 = "tls_ca"
 	redisTLSCert               = "tls_cert"
 	redisTLSKey                = "tls_key"
@@ -271,6 +272,11 @@ func main() {
 	timeout := flag.Duration("redis-timeout", time.Second*30, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
 	poolSizePtr := flag.Int(redisPoolSize, redisPoolSizeDefault, "Maximum number of socket connections per node.")
 	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
+	tlsEnabled := flag.Bool(redisTLS, false, "Enable TLS when connecting to Redis.")
+	tlsCA := flag.String(redisTLSCA, "", "CA cert file to verify the Redis server certificate, used in conjunction with --tls.")
+	tlsCert := flag.String(redisTLSCert, "", "Client cert file for mutual TLS, used in conjunction with --tls and --tls_key.")
+	tlsKey := flag.String(redisTLSKey, "", "Client key file for mutual TLS, used in conjunction with --tls and --tls_cert.")
+	tlsInsecureSkipVerify := flag.Bool(redisTLSInsecureSkipVerify, false, "Skip TLS certificate verification (insecure), used in conjunction with --tls.")
 	flag.Parse()
 
 	git_sha := toolGitSHA1()
@@ -305,6 +311,14 @@ func main() {
 	var clusterClient *redis.ClusterClient
 	var standaloneClient *redis.Client
 
+	tlsConfig, err := buildTLSConfig(*tlsEnabled, *tlsCA, *tlsCert, *tlsKey, *tlsInsecureSkipVerify)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *tlsEnabled {
+		log.Println("TLS enabled.")
+	}
+
 	standaloneOptions := redis.Options{Protocol: *resp,
 		Addr:         fmt.Sprintf("%s:%s", *host, *port),
 		Username:     *username,
@@ -313,6 +327,7 @@ func main() {
 		ReadTimeout:  *timeout,
 		WriteTimeout: *timeout,
 		PoolSize:     poolSize,
+		TLSConfig:    tlsConfig,
 	}
 	clusterOptions := redis.ClusterOptions{Protocol: *resp,
 		Addrs:        []string{fmt.Sprintf("%s:%s", *host, *port)},
@@ -322,6 +337,7 @@ func main() {
 		ReadTimeout:  *timeout,
 		WriteTimeout: *timeout,
 		PoolSize:     poolSize,
+		TLSConfig:    tlsConfig,
 	}
 
 	if *distributeSubscribers {

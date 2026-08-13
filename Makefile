@@ -22,7 +22,7 @@ endif
 
 LDFLAGS = "-X 'main.GitSHA1=$(GIT_SHA)' -X 'main.GitDirty=$(GIT_DIRTY)'"
 
-.PHONY: all test coverage build checkfmt fmt
+.PHONY: all test coverage build checkfmt fmt test-integration gen-test-tls-certs redis-tls-up redis-tls-down
 all: test coverage build checkfmt fmt
 
 build:
@@ -58,3 +58,21 @@ test: get
 
 coverage: get test
 	$(GOTEST) -race -coverprofile=coverage.txt -covermode=atomic .
+
+# TLS integration test harness: spins up a real, dockerized TLS-only Redis
+# (see scripts/redis-tls-docker.sh) and runs the -tags=integration tests
+# against it, always tearing the container down afterwards.
+gen-test-tls-certs:
+	./scripts/gen-test-tls-certs.sh
+
+redis-tls-up: gen-test-tls-certs
+	./scripts/redis-tls-docker.sh start
+
+redis-tls-down:
+	./scripts/redis-tls-docker.sh stop
+
+test-integration: get redis-tls-up
+	$(GOTEST) -race -tags=integration -v ./...; \
+	status=$$?; \
+	$(MAKE) redis-tls-down; \
+	exit $$status
