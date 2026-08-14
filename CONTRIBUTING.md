@@ -69,6 +69,16 @@ To check formatting only:
 make checkfmt
 ```
 
+Some behaviour (e.g. TLS) can only be verified against a real Redis server. Those tests are
+tagged `integration` and excluded from `make test`. Run them with Docker installed:
+
+```bash
+make test-integration
+```
+
+This generates throwaway test certs, starts a dockerized TLS-only Redis, runs the
+`-tags=integration` tests against it, and tears the container down afterwards.
+
 ## Review process
 
 - At least one maintainer approval is required before merge.

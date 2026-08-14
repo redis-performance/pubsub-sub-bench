@@ -48,6 +48,16 @@ To also generate a coverage report:
 make coverage
 ```
 
+Changes touching TLS (or anything else that can only be verified against a real Redis) need the
+`integration`-tagged tests too. These require Docker and are excluded from `make test`:
+
+```bash
+make test-integration
+```
+
+This generates throwaway test certs, starts a dockerized TLS-only Redis, runs the
+`-tags=integration` tests against it, and always tears the container down afterwards.
+
 Always run tests before declaring a task complete.
 
 ## How to submit changes

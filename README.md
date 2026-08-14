@@ -138,6 +138,16 @@ Usage of ./pubsub-sub-bench:
     	(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner. (default "dense")
   -test-time int
     	Number of seconds to run the test, after receiving the first message. Mutually exclusive with --messages.
+  -tls
+    	Enable TLS when connecting to Redis.
+  -tls_ca string
+    	CA cert file to verify the Redis server certificate, used in conjunction with --tls.
+  -tls_cert string
+    	Client cert file for mutual TLS, used in conjunction with --tls and --tls_key.
+  -tls_insecure_skip_verify
+    	Skip TLS certificate verification (insecure), used in conjunction with --tls.
+  -tls_key string
+    	Client key file for mutual TLS, used in conjunction with --tls and --tls_cert.
   -user string
     	Used to send ACL style 'AUTH username pass'. Needs -a.
   -verbose
@@ -225,3 +235,21 @@ Subscriber using sharded pub/sub
 ```
 
 This will distribute subscribers across cluster nodes in a round-robin manner.
+
+### Example 6: Connecting to a TLS-enabled Redis
+
+```bash
+./pubsub-sub-bench --mode subscribe --host redis-tls-host --port 6390 \
+  --tls --tls_ca /path/to/ca.crt \
+  --clients 10 --channel-maximum 100 --channel-minimum 1 --test-time 30
+```
+
+For mutual TLS (client certificate required by the server), also pass `--tls_cert`/`--tls_key`:
+
+```bash
+./pubsub-sub-bench --mode publish --host redis-tls-host --port 6390 \
+  --tls --tls_ca /path/to/ca.crt --tls_cert /path/to/client.crt --tls_key /path/to/client.key \
+  --clients 5 --channel-maximum 100 --channel-minimum 1 --rps 1000 --test-time 30
+```
+
+Use `--tls_insecure_skip_verify` to skip server certificate verification (not recommended outside of local testing).
