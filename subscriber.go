@@ -278,6 +278,15 @@ func main() {
 	tlsKey := flag.String(redisTLSKey, "", "Client key file for mutual TLS, used in conjunction with --tls and --tls_cert.")
 	tlsInsecureSkipVerify := flag.Bool(redisTLSInsecureSkipVerify, false, "Skip TLS certificate verification (insecure), used in conjunction with --tls.")
 	flag.Parse()
+	// Did the caller actually ask for a fan-out, or are we seeing the default? Only an explicit
+	// request that went unmet is worth warning about; the default silently differing from the
+	// real count is normal and not the user's doing.
+	subscribersPerChannelSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "subscribers-per-channel" {
+			subscribersPerChannelSet = true
+		}
+	})
 
 	git_sha := toolGitSHA1()
 	git_dirty_str := ""
@@ -434,6 +443,9 @@ func main() {
 	}
 	rttLatencyChannel := make(chan int64, 100000) // Channel for RTT measurements. buffer of 100K messages to process
 	totalCreatedClients := 0
+	// Subscriptions we actually created, counted as we create them. total_subscriptions above is
+	// derived from flags and cannot detect a request the fan-out did not satisfy.
+	totalCreatedSubscriptions := 0
 	if strings.Contains(*mode, "publish") {
 		var requestRate = Inf
 		var requestBurst = int(*rps)
@@ -512,6 +524,7 @@ func main() {
 					channels = append(channels, new_channel)
 				}
 				totalCreatedClients++
+				totalCreatedSubscriptions += len(channels)
 				subscriberName := fmt.Sprintf("subscriber#%d", client_id)
 				var client *redis.Client
 				var err error = nil
@@ -555,6 +568,12 @@ func main() {
 				wg.Add(1)
 				go subscriberRoutine(subscriberName, *mode, channels, *printMessages, connectionReconnectInterval, *measureRTT, rttLatencyChannel, ctx, &wg, client)
 			}
+		} else {
+			// Only "dense" is implemented for subscribe modes. Without this branch an unrecognised
+			// placement silently creates zero subscribers and the run reports a clean zero-message
+			// result, which reads as "the server delivered nothing" rather than "we subscribed to
+			// nothing".
+			log.Fatalf("subscribers-placement-per-channel=%q is not supported for mode %q (only \"dense\" is implemented). Refusing to run with zero subscribers.", *subscribers_placement, *mode)
 		}
 	} else {
 		log.Fatalf("Invalid mode '%s'. Must be one of: subscribe, ssubscribe, publish, spublish", *mode)
@@ -566,6 +585,23 @@ func main() {
 	w := new(tabwriter.Writer)
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
+	// Reconcile the flag-derived expectation against what the fan-out actually produced. These
+	// diverge whenever -subscribers-per-channel is used to request a fan-out that
+	// -min/-max-number-channels-per-subscriber cannot deliver: the former does not drive
+	// subscription creation, so the request is silently unmet while every reported figure keeps
+	// quoting it back. Report and terminate on the real number instead.
+	if strings.Contains(*mode, "subscribe") && totalCreatedSubscriptions != total_subscriptions {
+		if subscribersPerChannelSet {
+			log.Printf("WARNING: requested %d subscriptions (%d channels x %d -subscribers-per-channel) but actually created %d (%d clients x %d..%d channels each). "+
+				"-subscribers-per-channel does not control fan-out; use -min-number-channels-per-subscriber / -max-number-channels-per-subscriber. "+
+				"Reporting the actual count.",
+				total_subscriptions, total_channels, *subscribers_per_channel, totalCreatedSubscriptions,
+				*clients, *min_channels_per_subscriber, *max_channels_per_subscriber)
+		}
+		total_subscriptions = totalCreatedSubscriptions
+		total_messages = int64(total_subscriptions) * *messages_per_channel_subscriber
+	}
+
 	closed, start_time, duration, totalMessages, messageRateTs, rttValues := updateCLI(tick, c, total_messages, w, *test_time, *measureRTT, *mode, rttLatencyChannel, *verbose)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
 
